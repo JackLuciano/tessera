@@ -1,0 +1,65 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Tessera",
+  "version": "0.1.0",
+  "identifier": "com.tessera.app",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Tessera",
+        "width": 1360,
+        "height": 860,
+        "minWidth": 960,
+        "minHeight": 620,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJFNTI0N0E3MUFBNUMyNzEKUldSeHdxVWFwMGRTTHBKU0ZIRDh5M0NQUjZHWVU1bHV2bEJwNnd3TWg4dHdyN09vRVowaVcwYXQK",
+      "endpoints": ["https://github.com/JackLuciano/tessera/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "targets": "all",
+    "category": "Utility",
+    "publisher": "Tessera contributors",
+    "copyright": "© 2026 Tessera contributors · MIT License",
+    "homepage": "https://github.com/JackLuciano/tessera",
+    "windows": {
+      "nsis": {
+        "installMode": "both",
+        "displayLanguageSelector": true,
+        "languages": ["English", "Hungarian", "German"],
+        "installerIcon": "icons/icon.ico",
+        "startMenuFolder": "Tessera"
+      },
+      "wix": {
+        "language": ["en-US"]
+      }
+    },
+    "shortDescription": "Disk space analyzer",
+    "longDescription": "Tessera shows what takes up space on your drives with a fast parallel scanner, a zoomable treemap and smart cleanup.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

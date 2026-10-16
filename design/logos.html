@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Tessera Logo Options</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..800&family=Geist+Mono:wght@400..600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #f4f3fa; --card: #ffffff; --line: rgba(30, 25, 60, .09); --text: #1e1b2e; --muted: #6b6880;
+    --tile-a: #7c5cff; --tile-b: #e8489a; --tile-c: #38bdf8;
+  }
+  [data-theme="dark"] { --bg: #0f0e17; --card: #1a1926; --line: rgba(255, 255, 255, .07); --text: #eeedf5; --muted: #9a97ad; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: Geist, system-ui, sans-serif; background: var(--bg); color: var(--text); transition: background .3s, color .3s; }
+  header { max-width: 1180px; margin: 0 auto; padding: 32px 16px 8px; display: flex; align-items: end; gap: 16px; flex-wrap: wrap; }
+  h1 { margin: 0; font-size: 28px; letter-spacing: -.02em; }
+  header p { margin: 4px 0 0; color: var(--muted); }
+  .toggle { margin-left: auto; border: 1px solid var(--line); background: var(--card); color: var(--text); border-radius: 999px; padding: 8px 14px; font: inherit; font-size: 14px; cursor: pointer; }
+  main { max-width: 1180px; margin: 0 auto; padding: 16px; display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 20px; display: flex; flex-direction: column; gap: 16px; opacity: 0; transform: translateY(12px); animation: in .6s cubic-bezier(.2,.8,.2,1) forwards; animation-delay: calc(var(--i) * 80ms); }
+  .card.rec { border-color: color-mix(in srgb, var(--tile-a) 55%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--tile-a) 15%, transparent); }
+  @keyframes in { to { opacity: 1; transform: none; } }
+  .top { display: flex; align-items: center; gap: 10px; }
+  .letter { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; font-weight: 700; font-size: 13px; background: color-mix(in srgb, var(--text) 8%, transparent); }
+  .name { font-weight: 600; }
+  .badge { margin-left: auto; font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 999px; color: white; background: linear-gradient(120deg, var(--tile-a), var(--tile-b)); }
+  .stage { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .pane { border-radius: 16px; display: grid; place-items: center; padding: 18px 10px; }
+  .pane.light { background: #f7f6fc; }
+  .pane.dark { background: #13121c; }
+  .appicon { width: 96px; height: 96px; border-radius: 24px; display: grid; place-items: center; background: linear-gradient(140deg, var(--tile-a), var(--tile-b)); box-shadow: 0 14px 30px -12px color-mix(in srgb, var(--tile-a) 70%, transparent), inset 0 1px 0 rgba(255,255,255,.35); transition: transform .4s cubic-bezier(.2,.8,.2,1); }
+  .card:hover .appicon { transform: translateY(-4px) rotate(-3deg) scale(1.04); }
+  .appicon svg { width: 62px; height: 62px; }
+  .pane svg.mark { width: 64px; height: 64px; }
+  .word { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 14px; border: 1px solid var(--line); }
+  .word svg { width: 30px; height: 30px; }
+  .word b { font-size: 21px; letter-spacing: -.03em; font-weight: 700; }
+  .sizes { display: flex; align-items: end; gap: 14px; color: var(--muted); font-size: 11px; font-family: "Geist Mono", monospace; }
+  .sizes div { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .mini { border-radius: 22%; display: grid; place-items: center; background: linear-gradient(140deg, var(--tile-a), var(--tile-b)); }
+  .why { font-size: 13.5px; color: var(--muted); line-height: 1.5; margin: 0; }
+  .card svg .t { transition: transform .5s cubic-bezier(.2,.8,.2,1), opacity .4s; transform-box: fill-box; transform-origin: center; }
+  .card:hover svg .t:nth-child(odd) { transform: scale(.9); }
+  .card:hover svg .free { animation: glow 1.4s ease-in-out infinite; }
+  @keyframes glow { 50% { opacity: .35; } }
+  footer { max-width: 1180px; margin: 0 auto; padding: 8px 16px 40px; color: var(--muted); font-size: 13px; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; opacity: 1 !important; transform: none !important; } }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Tessera — logo options</h1>
+    <p>Each option as app icon, on light and dark, as a wordmark and at small sizes. Hover a card to see its motion.</p>
+  </div>
+  <button class="toggle" onclick="document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'">Toggle page theme</button>
+</header>
+<main id="grid"></main>
+<footer>The icons are plain SVG, so they export to .ico / .icns / PNG with no quality loss (the Tauri CLI <code>tauri icon</code> generates every platform size from one 1024px PNG).</footer>
+
+<script>
+// Each mark is drawn on a 64×64 grid. `fill` is a function so the same shapes render
+// white on the gradient app icon and gradient-coloured on plain backgrounds.
+const A = '#7c5cff', B = '#e8489a', C = '#38bdf8';
+const tile = (x, y, w, h, r, f, extra = '') => `<rect class="t" x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" fill="${f}" ${extra}/>`;
+function arcPath(cx, cy, r0, r1, a0, a1) {
+  const p = (r, a) => [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  const [x0, y0] = p(r1, a0), [x1, y1] = p(r1, a1), [x2, y2] = p(r0, a1), [x3, y3] = p(r0, a0);
+  const l = a1 - a0 > Math.PI ? 1 : 0;
+  return `M${x0} ${y0}A${r1} ${r1} 0 ${l} 1 ${x1} ${y1}L${x2} ${y2}A${r0} ${r0} 0 ${l} 0 ${x3} ${y3}Z`;
+}
+
+const OPTIONS = [
+  {
+    id: 'A', name: 'Free tile', rec: true,
+    why: 'A 3×3 mosaic with one tile missing and glowing — that empty tile is the free space Tessera wins back. Simple, reads at 16px, tells the story of the app.',
+    draw: (mono) => {
+      const f = (i) => mono ? 'white' : [A, A, null, A, B, B, B, B, C][i];
+      let s = '';
+      [7, 25, 43].forEach((y, r) => [7, 25, 43].forEach((x, c) => {
+        const i = r * 3 + c;
+        if (i === 2) s += `<rect class="free" x="${x + 1}" y="${y + 1}" width="12" height="12" rx="3.5" fill="none" stroke="${mono ? 'white' : B}" stroke-width="2" stroke-dasharray="3 2.6"/>`;
+        else s += tile(x, y, 14, 14, 4, f(i), mono ? `opacity="${[1, .9, 0, .8, 1, .85, .7, .9, .6][i]}"` : '');
+      }));
+      return s;
+    },
+  },
+  {
+    id: 'B', name: 'Treemap mosaic',
+    why: 'The treemap itself, squarified into four tiles of shrinking size. Most literal link to the main screen; feels like a data tool.',
+    draw: (mono) => {
+      const f = i => mono ? 'white' : [A, B, C, B][i];
+      const op = i => mono ? `opacity="${[1, .85, .7, .55][i]}"` : '';
+      return tile(7, 7, 28, 50, 6, f(0), op(0)) + tile(39, 7, 18, 28, 5, f(1), op(1)) + tile(39, 39, 18, 9, 3.5, f(2), op(2)) + tile(39, 51, 18, 6, 3, f(3), op(3));
+    },
+  },
+  {
+    id: 'C', name: 'Tile T',
+    why: 'The letter T built from five tiles. Works as a monogram for the dock, tray and favicon, and the tiles keep the mosaic idea.',
+    draw: (mono) => {
+      const f = i => mono ? 'white' : [A, A, B, B, C][i];
+      const op = i => mono ? `opacity="${[1, 1, 1, .8, .6][i]}"` : '';
+      return tile(7, 7, 14, 14, 4, f(0), op(0)) + tile(25, 7, 14, 14, 4, f(1), op(1)) + tile(43, 7, 14, 14, 4, f(2), op(2)) + tile(25, 25, 14, 14, 4, f(3), op(3)) + tile(25, 43, 14, 14, 4, f(4), op(4));
+    },
+  },
+  {
+    id: 'D', name: 'Mosaic ring',
+    why: 'A disk-usage ring broken into tiles, with one segment open. Connects the drive gauge and the sunburst chart; most “dashboard” of the set.',
+    draw: (mono) => {
+      const segs = 7, gap = .16, used = 6;
+      let s = '';
+      for (let i = 0; i < segs; i++) {
+        const a0 = -Math.PI / 2 + i * 2 * Math.PI / segs + gap / 2, a1 = a0 + 2 * Math.PI / segs - gap;
+        const col = mono ? 'white' : [A, A, A, B, B, B, C][i];
+        if (i >= used) s += `<path class="free" d="${arcPath(32, 32, 15, 26, a0, a1)}" fill="none" stroke="${mono ? 'white' : C}" stroke-width="1.8" stroke-dasharray="3 2.4"/>`;
+        else s += `<path class="t" d="${arcPath(32, 32, 15, 26, a0, a1)}" fill="${col}" ${mono ? `opacity="${1 - i * .07}"` : ''}/>`;
+      }
+      return s + `<circle cx="32" cy="32" r="6" fill="${mono ? 'white' : A}" ${mono ? 'opacity=".9"' : ''}/>`;
+    },
+  },
+  {
+    id: 'E', name: 'Tessera cube',
+    why: 'A tessera was a small stone cube used in Roman mosaics. An isometric cube with three shaded faces: distinctive and premium, but the most abstract.',
+    draw: (mono) => {
+      const top = 'M32 7 L55 20 L32 33 L9 20 Z', left = 'M9 20 L32 33 L32 58 L9 45 Z', right = 'M55 20 L55 45 L32 58 L32 33 Z';
+      if (mono) return `<path class="t" d="${top}" fill="white"/><path class="t" d="${left}" fill="white" opacity=".72"/><path class="t" d="${right}" fill="white" opacity=".48"/>`;
+      return `<path class="t" d="${top}" fill="${C}"/><path class="t" d="${left}" fill="${A}"/><path class="t" d="${right}" fill="${B}"/>`;
+    },
+  },
+];
+
+const svg = (inner, cls = 'mark', extra = '') => `<svg class="${cls}" viewBox="0 0 64 64" ${extra}>${inner}</svg>`;
+// Shape-only gaps for the cube: stroke the face seams with the background colour
+const cubeFix = (o, bg) => o.id === 'E' ? `<path d="M32 33 L32 58 M9 20 L32 33 L55 20" stroke="${bg}" stroke-width="2.2" fill="none" stroke-linejoin="round"/>` : '';
+
+document.getElementById('grid').innerHTML = OPTIONS.map((o, i) => `
+  <section class="card ${o.rec ? 'rec' : ''}" style="--i:${i}">
+    <div class="top"><span class="letter">${o.id}</span><span class="name">${o.name}</span>${o.rec ? '<span class="badge">Recommended</span>' : ''}</div>
+    <div class="stage">
+      <div class="pane light" style="grid-column: span 2; background: linear-gradient(180deg,#f7f6fc,#ecebf6)">
+        <div class="appicon">${svg(o.draw(true) + (o.id === 'E' ? cubeFix(o, 'rgba(0,0,0,.18)') : ''))}</div>
+      </div>
+      <div class="pane light">${svg(o.draw(false) + cubeFix(o, '#f7f6fc'))}</div>
+      <div class="pane dark">${svg(o.draw(false) + cubeFix(o, '#13121c'))}</div>
+    </div>
+    <div class="word">${svg(o.draw(false) + cubeFix(o, 'var(--card)'), '')}<b>Tessera</b></div>
+    <div class="sizes">
+      ${[48, 32, 24, 16].map(s => `<div><span class="mini" style="width:${s}px;height:${s}px">${svg(o.draw(true) + cubeFix(o, 'rgba(0,0,0,.18)'), '', `style="width:${s * .66}px;height:${s * .66}px"`)}</span>${s}px</div>`).join('')}
+    </div>
+    <p class="why">${o.why}</p>
+  </section>`).join('');
+</script>
+</body>
+</html>
