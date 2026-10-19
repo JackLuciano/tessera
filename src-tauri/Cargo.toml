@@ -1,6 +1,6 @@
 [package]
 name = "tessera"
-version = "0.1.0"
+version = "0.2.0"
 description = "Fast, good-looking disk space analyzer"
 authors = ["Tessera contributors"]
 license = "MIT"
@@ -19,7 +19,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -35,10 +35,14 @@ tauri-plugin-process = "2.4"
 notify = "8"
 same-file = "1"
 lz4_flex = "0.11"
+tauri-plugin-notification = "2"
+tauri-plugin-single-instance = "2"
+# Firefox keeps history and bookmarks in one database, so history is removed row by row
+rusqlite = { version = "0.37", features = ["bundled"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Storage_FileSystem", "Win32_System_DataExchange", "Win32_System_IO", "Win32_System_Ioctl", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

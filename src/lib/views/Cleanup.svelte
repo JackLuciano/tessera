@@ -1,11 +1,51 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { app } from '../store.svelte';
-  import { api, fmt, type JunkGroup } from '../api';
+  import { onMount } from 'svelte';
+  import { api, fmt, num, type JunkGroup, type SysJunk } from '../api';
   import { t } from '../i18n.svelte';
   import { confirmDelete } from '../confirm.svelte';
+  import { ask } from '../ask.svelte';
+  import { failures } from '../sys';
   import Icon from '../Icon.svelte';
 
+  // ---- system junk: known places, no drive scan needed ----
+  const SYS_ICO: Record<string, string> = { user_temp: 'cache', win_temp: 'cache', thumbs: 'image', crash: 'alert', shaders: 'game', wu_cache: 'download', recycle: 'trash', logs: 'doc', app_cache: 'cache' };
+  let sys = $state<SysJunk[] | null>(null);
+  let sysOn = $state(new Set<string>());
+  let sysOpen = $state<string | null>(null);
+  let sysBusy = $state(false);
+
+  async function loadSys() {
+    sys = null;
+    const items = await api.sysJunk().catch(e => { app.toast(String(e), 'error'); return []; });
+    sys = items;
+    sysOn = new Set(items.filter(i => i.safe && (!i.admin || app.elevated)).map(i => i.key));
+  }
+  onMount(loadSys);
+
+  let sysTotal = $derived((sys ?? []).filter(i => sysOn.has(i.key)).reduce((s, i) => s + i.size, 0));
+  function sysToggle(k: string) { const s = new Set(sysOn); s.has(k) ? s.delete(k) : s.add(k); sysOn = s; }
+
+  async function cleanSys() {
+    const picked = (sys ?? []).filter(i => sysOn.has(i.key));
+    const ok = await ask({
+      title: t('sysjunk.confirm', { size: fmt(sysTotal) }), text: t('sysjunk.confirmText'), ico: 'trash', confirm: t('sysjunk.clean'),
+      items: picked.map(i => ({ name: t('sysjunk.' + i.key), detail: fmt(i.size) })),
+    });
+    if (!ok) return;
+    sysBusy = true;
+    try {
+      const out = await api.cleanSysJunk(picked.map(i => i.key));
+      app.toast(t('sysjunk.cleaned', { size: fmt(out.freed) }), 'success');
+      if (out.locked) app.toast(t('sysjunk.locked', { n: out.locked }), 'info');
+      failures(out.failed);
+      await app.refreshDrives();
+      await loadSys();
+    } finally { sysBusy = false; }
+  }
+
+  // ---- regenerable folders found in the scanned tree ----
   let groups = $state<JunkGroup[]>([]);
   let on = $state(new Set<string>());
   let open = $state<string | null>(null);
@@ -46,14 +86,59 @@
   }
 </script>
 
+<section class="glass p-4 reveal">
+  <div class="flex items-center justify-between gap-2 flex-wrap">
+    <div>
+      <div class="font-semibold flex items-center gap-2"><Icon name="trash" style="color:var(--color-primary)" />{t('sysjunk.title')}</div>
+      <div class="text-xs muted mt-0.5">{t('sysjunk.sub')}</div>
+    </div>
+    <div class="flex items-center gap-2">
+      <button class="btn btn-ghost btn-xs btn-square" title={t('action.refresh')} onclick={loadSys} disabled={sysBusy}><Icon name="refresh" size=".9rem" /></button>
+      <button class="btn btn-primary btn-sm gap-2" disabled={!sysTotal || sysBusy} onclick={cleanSys}>
+        {#if sysBusy}<span class="loading loading-spinner loading-xs"></span>{:else}<Icon name="sparkles" size="1rem" />{/if}
+        {t('sysjunk.clean')} <span class="mono">{fmt(sysTotal)}</span>
+      </button>
+    </div>
+  </div>
+  {#if sys === null}
+    <div class="p-6 text-center"><span class="loading loading-dots"></span></div>
+  {:else if !sys.length}
+    <div class="muted text-sm p-6 text-center">{t('cleanup.nothing')}</div>
+  {:else}
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-2 mt-3">
+      {#each sys as j, i (j.key)}
+        {@const locked = j.admin && !app.elevated}
+        <div class="pick p-3 reveal {sysOn.has(j.key) ? 'on' : ''} {locked ? 'opacity-55' : ''}" style="--i:{i}">
+          <div class="flex items-center gap-3 {locked ? '' : 'cursor-pointer'}" role="button" tabindex="0" onclick={() => !locked && sysToggle(j.key)} onkeydown={e => e.key === ' ' && !locked && sysToggle(j.key)}>
+            <input type="checkbox" class="checkbox checkbox-primary checkbox-sm" checked={sysOn.has(j.key)} disabled={locked} tabindex="-1" />
+            <span class="w-9 h-9 rounded-lg grid place-items-center shrink-0 soft"><Icon name={SYS_ICO[j.key] ?? 'cache'} size="1rem" /></span>
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-medium truncate flex items-center gap-1.5">{t('sysjunk.' + j.key)}{#if j.admin}<span class="tag tag-warn"><Icon name="shield" size=".65rem" />{t('opt.admin')}</span>{/if}</div>
+              <div class="text-[11px] muted truncate">{t('sysjunk.' + j.key + '.hint')} · {t('common.nItems', { n: num(j.count) })}</div>
+            </div>
+            <span class="badge badge-soft badge-xs {j.safe ? 'badge-success' : 'badge-warning'}">{j.safe ? t('cleanup.safe') : t('cleanup.review')}</span>
+            <span class="mono text-sm font-semibold w-20 text-right">{fmt(j.size)}</span>
+            {#if j.sample.length}
+              <button class="btn btn-ghost btn-xs btn-square" onclick={e => { e.stopPropagation(); sysOpen = sysOpen === j.key ? null : j.key; }}><Icon name="info" size=".95rem" /></button>
+            {/if}
+          </div>
+          {#if sysOpen === j.key}
+            <div class="mt-2 ml-12 flex flex-col gap-0.5">{#each j.sample as s (s)}<div class="text-[11px] muted mono truncate selectable">{s}</div>{/each}</div>
+          {/if}
+        </div>
+      {/each}
+    </div>
+  {/if}
+</section>
+
 {#if !app.summary}
-  <div class="glass p-10 text-center muted">{t('common.scanFirst')}</div>
+  <div class="glass p-6 text-center muted text-sm reveal" style="--i:2">{t('cleanup.scanForMore')}</div>
 {:else}
   <section class="grid grid-cols-1 xl:grid-cols-12 gap-4">
     <div class="glass p-4 xl:col-span-8 reveal flex flex-col">
       <div class="flex items-center justify-between gap-2 flex-wrap">
         <div>
-          <div class="font-semibold flex items-center gap-2"><Icon name="cleanup" style="color:var(--color-primary)" />{t('nav.cleanup')}</div>
+          <div class="font-semibold flex items-center gap-2"><Icon name="cleanup" style="color:var(--color-primary)" />{t('cleanup.projectTitle')}</div>
           <div class="text-xs mt-0.5" style={app.permanentDelete ? 'color:var(--color-error)' : ''}>
             <span class={app.permanentDelete ? '' : 'muted'}>{app.permanentDelete ? t('cleanup.permOn') : t('cleanup.sub')}</span>
           </div>

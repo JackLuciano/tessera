@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { app, IS_WINDOWS, type View } from './store.svelte';
+  import { app } from './store.svelte';
+  import { NAV_ALL } from './nav';
   import { api, fmt, type FileEntry } from './api';
   import { t } from './i18n.svelte';
   import { updater } from './update.svelte';
@@ -15,10 +16,8 @@
   let sel = $state(0);
   let files = $state<FileEntry[]>([]);
 
-  const views: [View, string][] = [['overview', 'overview'], ['explorer', 'explorer'], ['cleanup', 'cleanup'], ['files', 'files'], ['dupes', 'copy'], ['history', 'history'], ...(IS_WINDOWS ? [['optimizer', 'gauge'] as [View, string]] : []), ['settings', 'settings']];
-
   let commands = $derived<Cmd[]>([
-    ...views.map(([v, ico]) => ({ label: t('palette.goto', { view: t('nav.' + v) }), ico, run: () => (app.view = v) })),
+    ...NAV_ALL.map(({ v, ico }) => ({ label: t('palette.goto', { view: t('nav.' + v) }), ico, run: () => (app.view = v) })),
     { label: app.summary ? t('action.rescan') : t('action.scan'), ico: 'refresh', hint: 'F5', run: () => app.scan() },
     ...app.drives.map(d => ({ label: t('action.scanDrive', { drive: d.mount.replace(/\\$/, '') }), ico: 'drive', run: () => app.scan(d.mount) })),
     { label: t('palette.toggleTheme'), ico: 'moon', run: () => app.setMode(document.documentElement.dataset.theme === 'tessera-dark' ? 'light' : 'dark') },

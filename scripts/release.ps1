@@ -82,7 +82,14 @@ Invoke-Checked { git tag -a $tag -m "Tessera $tag" } 'git tag'
 Invoke-Checked { git push origin $tag } 'git push tag'
 $assets = @($setup.FullName, "$($setup.FullName).sig", $msi.FullName, "$($msi.FullName).sig", $latestPath)
 $noteArgs = if ($NotesFile) { @('--notes-file', $NotesFile) } else { @('--generate-notes') }
-Invoke-Checked { gh release create $tag @assets --repo $repo --title "Tessera $tag" --verify-tag @noteArgs } 'gh release create'
+# GitHub can take a few seconds to see a freshly pushed tag, and --verify-tag fails until it does
+for ($try = 1; ; $try++) {
+  gh release create $tag @assets --repo $repo --title "Tessera $tag" --verify-tag @noteArgs
+  if (-not $LASTEXITCODE) { break }
+  if ($try -ge 5) { throw "gh release create failed (exit $LASTEXITCODE). The tag $tag is already pushed; rerun the gh command by hand." }
+  Write-Host "Release not created yet (attempt $try), retrying..." -ForegroundColor Yellow
+  Start-Sleep -Seconds (3 * $try)
+}
 Write-Host "Published https://github.com/$repo/releases/tag/$tag" -ForegroundColor Green
 
 # 5. Windows is out: now let Actions add macOS + Linux to the same release

@@ -25,6 +25,37 @@ export interface JunkGroup { key: string; label: string; hint: string; safe: boo
 export interface DeleteResult { freed: number; deleted: number; failed: string[]; cancelled?: boolean }
 export interface DeleteProgress { done: number; total: number; bytes: number; total_bytes: number }
 
+export interface Prefs { close_to_tray: boolean; tray_meter: boolean; tray_hint_shown: boolean }
+export type RestorePoint = 'created' | 'recent' | 'session' | 'needs_admin' | 'unavailable' | 'unsupported';
+export interface SysJunk { key: string; safe: boolean; admin: boolean; size: number; count: number; sample: string[] }
+export interface CleanOutcome { freed: number; cleaned: number; locked: number; failed: string[] }
+export interface PrivacyItem { id: string; group: string; kind: string; size: number; count: number; running: boolean }
+export interface PrivacyOutcome { freed: number; cleaned: number; failed: string[]; running: string[] }
+export interface RegIssue { id: string; cat: string; name: string; missing: string; admin: boolean }
+export interface RegBackup { name: string; created: number; items: number }
+export interface RegFix { fixed: number; failed: string[]; backup: string | null; restore_point: RestorePoint }
+export interface BrokenShortcut { path: string; name: string; target: string; location: string; admin: boolean }
+export interface EmptyFolder { id: number; path: string; nested: number }
+export interface ShredTarget { path: string; size: number; files: number; is_dir: boolean }
+export interface PhysDisk { id: string; name: string; media: 'ssd' | 'hdd' | 'unknown'; bus: string; health: 'healthy' | 'warning' | 'unhealthy' | 'unknown'; size: number; temperature: number | null; wear: number | null; power_on_hours: number | null; read_errors: number | null; volumes: string[] }
+export interface HealthReport { disks: PhysDisk[]; counters_need_admin: boolean; can_optimize: boolean }
+export interface Program { id: string; name: string; publisher: string; version: string; installed: number; size: number; location: string; machine: boolean }
+export interface Leftover { kind: 'folder' | 'registry'; path: string; size: number; admin: boolean }
+export interface LeftoverFix { removed: number; freed: number; failed: string[]; backup: string | null; restore_point: RestorePoint | null }
+export interface Upgrade { name: string; id: string; version: string; available: string; source: string }
+export interface Adapter { index: number; name: string; description: string; guid: string; servers: string[]; manual: boolean; preset: string }
+export interface TcpSetting { key: string; on: boolean; value: string }
+export interface NetStatus { adapters: Adapter[]; tcp: TcpSetting[]; has_backup: boolean; elevated: boolean }
+export interface Latency { key: string; server: string; ms: number | null }
+export interface CareConfig { modules: string[]; privacy_kinds: string[]; schedule: 'off' | 'daily' | 'weekly' | 'logon'; time: string; auto_clean: boolean; last_run: number; last_score: number | null; last_found: number; last_issues: number }
+export interface CareState extends CareConfig { running: boolean; can_schedule: boolean }
+export interface FixPlan { junk: string[]; privacy: string[]; registry: string[]; shortcuts: string[] }
+export interface CareReport {
+  at: number; score: number; junk: SysJunk[]; privacy: PrivacyItem[]; registry: RegIssue[]; shortcuts: BrokenShortcut[];
+  startup: number; disks: PhysDisk[]; updates: Upgrade[]; fixable_bytes: number; fixable_issues: number; plan: FixPlan;
+}
+export interface CareFix { freed: number; fixed: number; failed: string[]; running: string[]; restore_point: RestorePoint | null; registry_backup: string | null }
+
 export const api = {
   drives: () => invoke<Drive[]>('list_drives'),
   scan: (path: string) => invoke<ScanSummary>('scan', { path }),
@@ -33,7 +64,7 @@ export const api = {
   ancestors: (id: number) => invoke<[number, string][]>('get_ancestors', { id }),
   largestFiles: (limit = 300) => invoke<FileEntry[]>('largest_files', { limit }),
   junk: () => invoke<JunkGroup[]>('find_junk'),
-  delete: (ids: number[], permanent: boolean) => invoke<DeleteResult>('delete_nodes', { ids, permanent }),
+  delete: (ids: number[], permanent: boolean, shred = false) => invoke<DeleteResult>('delete_nodes', { ids, permanent, shred }),
   cancelDelete: () => invoke<void>('cancel_delete'),
   reveal: (path: string) => invoke<void>('reveal', { path }),
   isElevated: () => invoke<boolean>('is_elevated'),
@@ -60,6 +91,46 @@ export const api = {
   },
   historyList: (root: string) => invoke<SnapshotInfo[]>('history_list', { root }),
   historyDiff: (ts: number) => invoke<DiffRow[]>('history_diff', { ts }),
+  sysJunk: () => invoke<SysJunk[]>('junk_scan'),
+  cleanSysJunk: (keys: string[]) => invoke<CleanOutcome>('junk_clean', { keys }),
+  privacy: () => invoke<PrivacyItem[]>('privacy_scan'),
+  cleanPrivacy: (ids: string[]) => invoke<PrivacyOutcome>('privacy_clean', { ids }),
+  shortcuts: () => invoke<BrokenShortcut[]>('shortcuts_scan'),
+  fixShortcuts: (paths: string[]) => invoke<{ fixed: number; failed: string[] }>('shortcuts_fix', { paths }),
+  emptyFolders: () => invoke<EmptyFolder[]>('empty_folders'),
+  shredInspect: (paths: string[]) => invoke<ShredTarget[]>('shred_inspect', { paths }),
+  shred: (paths: string[], passes: number) => invoke<DeleteResult>('shred_paths', { paths, passes }),
+  diskHealth: () => invoke<HealthReport>('disk_health'),
+  diskOptimize: (volume: string) => invoke<string>('disk_optimize', { volume }),
+  registry: () => invoke<RegIssue[]>('registry_scan'),
+  fixRegistry: (ids: string[]) => invoke<RegFix>('registry_fix', { ids }),
+  registryBackups: () => invoke<RegBackup[]>('registry_backups'),
+  undoRegistry: (name: string) => invoke<number>('registry_undo', { name }),
+  programs: () => invoke<Program[]>('programs_list'),
+  uninstall: (id: string) => invoke<boolean>('program_uninstall', { id }),
+  leftovers: (program: Program) => invoke<Leftover[]>('program_leftovers', { program }),
+  removeLeftovers: (items: Leftover[]) => invoke<LeftoverFix>('leftovers_remove', { items }),
+  updates: () => invoke<{ available: boolean; items: Upgrade[] }>('updates_list'),
+  installUpdate: (id: string) => invoke<void>('update_install', { id }),
+  net: {
+    status: () => invoke<NetStatus>('net_status'),
+    setDns: (preset: string) => invoke<number>('net_set_dns', { preset }),
+    latency: (current?: string) => invoke<Latency[]>('net_latency', { current }),
+    flush: () => invoke<void>('net_flush'),
+    setTcp: (key: string, on: boolean) => invoke<void>('net_set_tcp', { key, on }),
+    restore: () => invoke<number>('net_restore'),
+    repair: () => invoke<void>('net_repair'),
+  },
+  care: {
+    config: () => invoke<CareState>('care_config'),
+    setConfig: (config: CareConfig) => invoke<void>('care_set_config', { config }),
+    scan: () => invoke<CareReport>('care_scan'),
+    fix: (plan: FixPlan) => invoke<CareFix>('care_fix', { plan }),
+  },
+  prefs: () => invoke<Prefs>('prefs_get'),
+  setPrefs: (prefs: Prefs) => invoke<void>('prefs_set', { prefs }),
+  trayLabels: (labels: Record<string, string>) => invoke<void>('tray_labels', { labels }),
+  launchState: () => invoke<{ hidden: boolean }>('launch_state'),
 };
 
 export const CATS: Record<Cat, { label: string; ico: string }> = {

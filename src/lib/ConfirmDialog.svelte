@@ -39,7 +39,7 @@
       {@const eta = c.eta}
       <div class="mt-4">
         <div class="flex justify-between items-baseline text-sm">
-          <span class="font-medium">{c.stopping ? t('confirm.stopping') : c.permanent ? t('confirm.deleting') : t('confirm.recycling')}</span>
+          <span class="font-medium">{c.stopping ? t('confirm.stopping') : c.permanent && c.shred ? t('shred.working') : c.permanent ? t('confirm.deleting') : t('confirm.recycling')}</span>
           <span class="mono font-semibold">{pct.toFixed(0)}%</span>
         </div>
         <div class="progress-flow mt-2 {p ? '' : 'indeterminate'}" style={c.permanent ? '--color-primary:var(--color-error)' : ''}><i style="width:{pct}%"></i></div>
@@ -49,7 +49,11 @@
         </div>
       </div>
     {:else if c.permanent}
-      <label class="flex items-center gap-2 mt-4 text-sm cursor-pointer">
+      <label class="flex items-start gap-2 mt-4 text-sm cursor-pointer">
+        <input type="checkbox" class="checkbox checkbox-error checkbox-sm mt-0.5" bind:checked={c.shred} />
+        <span>{t('shred.option')}<span class="block text-[11px] muted">{t('shred.optionHint')}</span></span>
+      </label>
+      <label class="flex items-center gap-2 mt-3 text-sm cursor-pointer">
         <input type="checkbox" class="checkbox checkbox-error checkbox-sm" bind:checked={c.ack} /> {t('confirm.ack')}
       </label>
     {/if}

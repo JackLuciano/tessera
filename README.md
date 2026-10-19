@@ -7,8 +7,9 @@
 **See what's eating your disk — fast, beautiful, cross-platform.**
 
 A lightweight disk space analyzer for Windows, macOS and Linux with a parallel Rust scanner,
-a zoomable treemap and smart cleanup that knows what's safe to delete — plus a one-click
-Windows optimizer with gaming, work and battery profiles.
+a zoomable treemap and smart cleanup that knows what's safe to delete — plus one-click PC care:
+junk and privacy cleaning, a careful registry cleaner, uninstaller, software updater, internet
+booster, drive health and a Windows optimizer with gaming, work and battery profiles.
 
 [![Release](https://img.shields.io/github/v/release/JackLuciano/tessera?include_prereleases&style=flat-square&color=7c5cff)](../../releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/JackLuciano/tessera/ci.yml?style=flat-square&label=CI)](../../actions/workflows/ci.yml)
@@ -26,6 +27,13 @@ Windows optimizer with gaming, work and battery profiles.
 
 |   |   |
 |---|---|
+| ❤️ **One-click Care** | One scan checks junk files, privacy traces, the registry, broken shortcuts, startup apps, drive health and software updates, gives a health score and fixes the safe part with one click — after showing you exactly what changes. Can run on a schedule (Windows Task Scheduler) and notify you from the tray. |
+| 🕵️ **Privacy sweep** | Browser caches, cookies, history and sessions (Chrome, Edge, Brave, Vivaldi, Opera, Firefox — Firefox bookmarks are kept), recent files, Run/Explorer history and the clipboard. Cookies and history are never picked by default. |
+| 🧾 **Careful registry cleaner** | Only entries that point to files that no longer exist (uninstall entries, app paths, startup commands, shared DLLs…). A Windows restore point plus Tessera's own backup before every fix, with one-click undo. |
+| 📦 **Uninstaller & updater** | Run a program's own uninstaller, then sweep the folders and registry keys it left behind. Update outdated programs through winget. |
+| 🌐 **Internet booster** | Measure which DNS (router, Cloudflare, Google, Quad9, OpenDNS) answers fastest from your connection and switch with one click; flush DNS, repair Winsock, check TCP settings — all reversible. |
+| 🩺 **Drive health** | SMART status, temperature, wear and power-on hours for every drive, plus TRIM for SSDs and defragmentation for hard drives. |
+| 🔥 **Shredder & more** | Overwrite files before deleting them (1 or 3 passes), find broken shortcuts and empty folders, clean system junk without a scan. A tray icon with a live CPU/RAM meter. |
 | 🚀 **NTFS MFT fast path** | Run as administrator and Tessera reads the Master File Table straight from the volume — a whole drive in seconds, like WizTree. |
 | ⚡ **Fast parallel scanner** | Without admin rights (or on other file systems) Rust + rayon walk every folder on all CPU cores. Junctions and symlinks are skipped so nothing is counted twice. |
 | 👯 **Duplicate finder** | Size → quick head/tail hash → full **BLAKE3** confirmation. Keep newest, oldest or shortest path and remove the rest — or **replace them with hard links** so every path keeps working while the data is stored once. |
@@ -172,6 +180,7 @@ for CI. Contributors without the key still get a working build — just without 
 - [x] More languages: Español, Français, Polski
 - [x] Saved scans that open instantly and catch up via the NTFS USN journal
 - [x] Windows optimizer with switchable profiles
+- [x] One-click Care: privacy sweep, registry cleaner, uninstaller, updater, internet booster, drive health, shredder, tray
 - [ ] Per-game profiles that switch automatically when a game starts
 - [ ] Even more languages — [help translate!](CONTRIBUTING.md#translations)
 

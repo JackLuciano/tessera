@@ -95,6 +95,70 @@ const junkRule = (key: string, label: string, hint: string, safe: boolean, names
 
 let activeProfile = 'gaming';
 
+const sysJunk = () => [
+  { key: 'user_temp', safe: true, admin: false, size: 3.3 * GB, count: 929, sample: ['C:\\Users\\alex\\AppData\\Local\\Temp\\setup_2817.tmp'] },
+  { key: 'shaders', safe: false, admin: false, size: 3.9 * GB, count: 321, sample: ['C:\\Users\\alex\\AppData\\Local\\NVIDIA\\DXCache'] },
+  { key: 'thumbs', safe: true, admin: false, size: 161 * MB, count: 15, sample: [] },
+  { key: 'crash', safe: true, admin: false, size: 121 * MB, count: 514, sample: ['C:\\Users\\alex\\AppData\\Local\\CrashDumps\\game.exe.4120.dmp'] },
+  { key: 'win_temp', safe: true, admin: true, size: 88 * MB, count: 61, sample: [] },
+  { key: 'recycle', safe: false, admin: false, size: 2.1 * GB, count: 43, sample: [] },
+];
+const privacy = () => [
+  { id: 'chrome:cache', group: 'chrome', kind: 'cache', size: 668 * MB, count: 7, running: true },
+  { id: 'chrome:cookies', group: 'chrome', kind: 'cookies', size: 2 * MB, count: 2, running: true },
+  { id: 'chrome:history', group: 'chrome', kind: 'history', size: 41 * MB, count: 8, running: true },
+  { id: 'chrome:session', group: 'chrome', kind: 'session', size: 1 * MB, count: 1, running: true },
+  { id: 'firefox:cache', group: 'firefox', kind: 'cache', size: 312 * MB, count: 3, running: false },
+  { id: 'firefox:cookies', group: 'firefox', kind: 'cookies', size: 1 * MB, count: 3, running: false },
+  { id: 'firefox:history', group: 'firefox', kind: 'history', size: 0, count: 18240, running: false },
+  { id: 'system:recent', group: 'system', kind: 'recent', size: 16 * MB, count: 716, running: false },
+  { id: 'system:run_history', group: 'system', kind: 'run_history', size: 0, count: 5, running: false },
+  { id: 'system:typed_paths', group: 'system', kind: 'typed_paths', size: 0, count: 26, running: false },
+  { id: 'system:clipboard', group: 'system', kind: 'clipboard', size: 0, count: 0, running: false },
+];
+const registry = () => [
+  { id: 'HKLM\\U\\a', cat: 'uninstall', name: 'Old Game Launcher 2.1', missing: 'C:\\Games\\OldLauncher\\uninstall.exe', admin: true },
+  { id: 'HKCU\\U\\b', cat: 'uninstall', name: 'Photo Tool', missing: 'C:\\Users\\alex\\AppData\\Local\\PhotoTool\\unins000.exe', admin: false },
+  { id: 'HKCU\\R|c', cat: 'startup', name: 'Updater', missing: 'C:\\Program Files\\Vendor\\updater.exe', admin: false },
+  { id: 'HKLM\\A\\d', cat: 'app_paths', name: 'oldtool.exe', missing: 'C:\\Tools\\oldtool.exe', admin: true },
+  ...Array.from({ length: 9 }, (_, i) => ({ id: `HKCU\\M|${i}`, cat: 'mui_cache', name: `C:\\Temp\\setup${i}.exe.FriendlyAppName`, missing: `C:\\Temp\\setup${i}.exe`, admin: false })),
+];
+const shortcuts = () => [
+  { path: 'C:\\Users\\alex\\Desktop\\Old Game.lnk', name: 'Old Game', target: 'D:\\Games\\OldGame\\game.exe', location: 'desktop', admin: false },
+  { path: 'C:\\Users\\alex\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Photo Tool.lnk', name: 'Photo Tool', target: 'C:\\Users\\alex\\AppData\\Local\\PhotoTool\\phototool.exe', location: 'start_menu', admin: false },
+  { path: 'C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Vendor\\Uninstall.lnk', name: 'Uninstall Vendor App', target: 'C:\\Program Files\\Vendor\\unins000.exe', location: 'start_menu', admin: true },
+];
+const programs = () => [
+  ['Blender', 'Blender Foundation', '4.5.2', 912], ['Discord', 'Discord Inc.', '1.0.9201', 410], ['Docker Desktop', 'Docker Inc.', '4.92.0', 2400],
+  ['GIMP 3.0.4', 'The GIMP Team', '3.0.4', 380], ['Git', 'The Git Development Community', '2.54.0', 340], ['OBS Studio', 'OBS Project', '31.1', 520],
+  ['Steam', 'Valve Corporation', '2.10.91.91', 0], ['Visual Studio Code', 'Microsoft Corporation', '1.141.1', 420], ['VLC media player', 'VideoLAN', '3.0.21', 180],
+].map(([name, publisher, version, mb], i) => ({ id: `HKLM\\U\\${i}`, name, publisher, version, installed: now - (i * 37 + 9) * 86400, size: (mb as number) * MB, location: '', machine: i % 2 === 0 }));
+const updates = () => [
+  { name: 'Docker Desktop', id: 'Docker.DockerDesktop', version: '4.92.0', available: '4.95.0', source: 'winget' },
+  { name: 'Git', id: 'Git.Git', version: '2.54.0', available: '2.55.0.5', source: 'winget' },
+  { name: 'Microsoft Visual Studio Code', id: 'Microsoft.VisualStudioCode', version: '1.141.1', available: '1.142.0', source: 'winget' },
+  { name: 'Python 3.14.5', id: 'Python.Python.3.14', version: '3.14.5', available: '3.14.7', source: 'winget' },
+  { name: 'Telegram Desktop', id: 'Telegram.TelegramDesktop', version: '7.1.2', available: '7.3.1', source: 'winget' },
+];
+let careCfg = {
+  modules: ['junk', 'privacy', 'registry', 'shortcuts', 'startup', 'disk', 'updates'],
+  privacy_kinds: ['cache', 'session', 'recent', 'run_history', 'typed_paths', 'search_history'],
+  schedule: 'weekly', time: '12:00', auto_clean: false, last_run: now - 3 * 86400, last_score: 71, last_found: 3.6 * GB, last_issues: 31,
+};
+const careReport = () => {
+  const junk = sysJunk(), priv = privacy(), reg = registry(), links = shortcuts();
+  const plan = {
+    junk: junk.filter(j => j.safe).map(j => j.key),
+    privacy: priv.filter(p => careCfg.privacy_kinds.includes(p.kind) && (!p.running || p.kind === 'cache')).map(p => p.id),
+    registry: reg.map(r => r.id), shortcuts: links.filter(l => !l.admin).map(l => l.path),
+  };
+  return {
+    at: Math.floor(Date.now() / 1000), score: 68, junk, privacy: priv, registry: reg, shortcuts: links, startup: 11,
+    disks: [{ id: '1', name: 'Samsung SSD 990 PRO', media: 'ssd', bus: 'NVMe', health: 'healthy', size: 2000 * GB, temperature: 41, wear: 3, power_on_hours: 3120, read_errors: 0, volumes: ['C:'] }],
+    updates: updates(), fixable_bytes: 4.1 * GB, fixable_issues: 37, plan,
+  };
+};
+
 /** Command call counts, for checking that views don't refetch too often (`window.__mockCalls`). */
 const calls: Record<string, number> = ((window as unknown as { __mockCalls: Record<string, number> }).__mockCalls = {});
 let liveTimer: ReturnType<typeof setInterval> | undefined;
@@ -222,6 +286,58 @@ export function installMock() {
       }
       case 'cancel_delete': return null;
       case 'hardlink_dupes': return { freed: 12 * GB, deleted: a.pairs.length, failed: [] };
+      case 'prefs_get': return { close_to_tray: true, tray_meter: true, tray_hint_shown: true };
+      case 'prefs_set': case 'tray_labels': return null;
+      case 'launch_state': return { hidden: false };
+      case 'junk_scan': return sysJunk();
+      case 'junk_clean': return { freed: 3.4 * GB, cleaned: 812, locked: 14, failed: [] };
+      case 'privacy_scan': return privacy();
+      case 'privacy_clean': return { freed: 0.9 * GB, cleaned: (a.ids ?? []).length, failed: [], running: [] };
+      case 'registry_scan': return registry();
+      case 'registry_fix': return { fixed: (a.ids ?? []).length, failed: [], backup: '1760000000.json', restore_point: 'created' };
+      case 'registry_backups': return [{ name: '1760000000.json', created: now - 2 * 86400, items: 12 }];
+      case 'registry_undo': return 12;
+      case 'shortcuts_scan': return shortcuts();
+      case 'shortcuts_fix': return { fixed: (a.paths ?? []).length, failed: [] };
+      case 'empty_folders': return [
+        { id: nodes.findIndex(n => n.name === 'Wallpapers'), path: 'C:\\Users\\alex\\Documents\\Old project\\assets', nested: 3 },
+        { id: nodes.findIndex(n => n.name === 'Invoices'), path: 'C:\\Users\\alex\\Downloads\\New folder', nested: 0 },
+        { id: nodes.findIndex(n => n.name === 'Scans'), path: 'C:\\Games\\Mods\\backup', nested: 1 },
+      ];
+      case 'shred_inspect': return (a.paths as string[]).map(p => ({ path: p, size: 1.2 * GB, files: 14, is_dir: !/\.\w+$/.test(p) }));
+      case 'shred_paths': return { freed: 1.2 * GB, deleted: (a.paths ?? []).length, failed: [], cancelled: false };
+      case 'disk_health': return {
+        disks: [
+          { id: '1', name: 'Samsung SSD 990 PRO 2TB', media: 'ssd', bus: 'NVMe', health: 'healthy', size: 2000 * GB, temperature: 41, wear: 3, power_on_hours: 3120, read_errors: 0, volumes: ['C:'] },
+          { id: '0', name: 'WDC WD40EZAZ', media: 'hdd', bus: 'SATA', health: 'warning', size: 4000 * GB, temperature: 47, wear: null, power_on_hours: 28411, read_errors: 12, volumes: ['D:'] },
+        ], counters_need_admin: false, can_optimize: true,
+      };
+      case 'disk_optimize': await new Promise(r => setTimeout(r, 1500)); return a.volume;
+      case 'programs_list': return programs();
+      case 'program_uninstall': await new Promise(r => setTimeout(r, 1200)); return true;
+      case 'program_leftovers': return [
+        { kind: 'folder', path: `C:\\Users\\alex\\AppData\\Roaming\\${a.program.name}`, size: 180 * MB, admin: false },
+        { kind: 'registry', path: `HKCU\\Software\\${a.program.name}`, size: 0, admin: false },
+      ];
+      case 'leftovers_remove': return { removed: (a.items ?? []).length, freed: 180 * MB, failed: [], backup: null, restore_point: 'session' };
+      case 'updates_list': return { available: true, items: updates() };
+      case 'update_install': await new Promise(r => setTimeout(r, 900)); return null;
+      case 'net_status': return {
+        adapters: [{ index: 10, name: 'Ethernet', description: 'Intel(R) Ethernet Connection I219-V', guid: '{0}', servers: ['192.168.0.1'], manual: false, preset: 'auto' }],
+        tcp: [{ key: 'autotuning', on: true, value: 'Normal' }, { key: 'rss', on: false, value: 'Disabled' }, { key: 'nagle', on: false, value: '' }],
+        has_backup: true, elevated: true,
+      };
+      case 'net_latency': await new Promise(r => setTimeout(r, 700)); return [
+        { key: 'current', server: '192.168.0.1', ms: 17 }, { key: 'cloudflare', server: '1.1.1.1', ms: 11 }, { key: 'google', server: '8.8.8.8', ms: 24 },
+        { key: 'quad9', server: '9.9.9.9', ms: 19 }, { key: 'opendns', server: '208.67.222.222', ms: null },
+      ];
+      case 'net_set_dns': return 1;
+      case 'net_flush': case 'net_set_tcp': case 'net_repair': return null;
+      case 'net_restore': return 2;
+      case 'care_config': return { ...careCfg, running: false, can_schedule: true };
+      case 'care_set_config': careCfg = { ...careCfg, ...a.config }; return null;
+      case 'care_scan': await new Promise(r => setTimeout(r, 1800)); return careReport();
+      case 'care_fix': return { freed: 4.1 * GB, fixed: 37, failed: [], running: [], restore_point: 'created', registry_backup: '1760000000.json' };
       case 'plugin:updater|check': return null;
       case 'plugin:dialog|open': return null;
       default:

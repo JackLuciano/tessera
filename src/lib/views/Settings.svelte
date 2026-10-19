@@ -24,7 +24,7 @@
   <div class="divide-y divide-[var(--glass-border)]">
     <div class="flex items-center gap-4 py-4">
       <div class="flex-1"><div class="font-medium text-sm">{t('settings.language')}</div><div class="text-xs muted">{t('settings.languageHint')}</div></div>
-      <select class="select select-sm w-44" value={i18n.locale} onchange={e => i18n.setLocale((e.target as HTMLSelectElement).value)}>
+      <select class="select select-sm w-44" value={i18n.locale} onchange={e => { i18n.setLocale((e.target as HTMLSelectElement).value); app.sendTrayLabels(); }}>
         {#each Object.entries(LOCALES) as [code, l] (code)}<option value={code}>{l.name}</option>{/each}
       </select>
     </div>
@@ -47,6 +47,18 @@
     <div class="flex items-center gap-4 py-4">
       <div class="flex-1"><div class="font-medium text-sm">{t('settings.live')}</div><div class="text-xs muted">{t('settings.liveHint')}</div></div>
       <input type="checkbox" class="toggle toggle-primary" checked={app.live} onchange={e => app.setLive((e.target as HTMLInputElement).checked)} />
+    </div>
+  </div>
+
+  <h2 class="text-lg font-semibold mt-6 mb-1">{t('settings.tray')}</h2>
+  <div class="divide-y divide-[var(--glass-border)]">
+    <div class="flex items-center gap-4 py-4">
+      <div class="flex-1"><div class="font-medium text-sm">{t('settings.closeToTray')}</div><div class="text-xs muted">{t('settings.closeToTrayHint')}</div></div>
+      <input type="checkbox" class="toggle toggle-primary" checked={app.prefs.close_to_tray} onchange={e => app.setPrefs({ close_to_tray: (e.target as HTMLInputElement).checked })} />
+    </div>
+    <div class="flex items-center gap-4 py-4">
+      <div class="flex-1"><div class="font-medium text-sm">{t('settings.trayMeter')}</div><div class="text-xs muted">{t('settings.trayMeterHint')}</div></div>
+      <input type="checkbox" class="toggle toggle-primary" checked={app.prefs.tray_meter} onchange={e => app.setPrefs({ tray_meter: (e.target as HTMLInputElement).checked })} />
     </div>
   </div>
 
