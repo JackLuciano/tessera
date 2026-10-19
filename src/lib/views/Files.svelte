@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { app } from '../store.svelte';
   import { api, fmt, ago, CATS, type Cat, type FileEntry } from '../api';
   import { t } from '../i18n.svelte';
@@ -15,8 +16,13 @@
   let sel = $state(new Set<number>());
 
   $effect(() => {
-    void app.version;
-    if (app.summary) api.largestFiles(1000).then(f => { files = f; sel = new Set(); });
+    void app.version; void app.liveVersion;
+    // Live refreshes keep the selection for files that still exist; summary is read untracked (it changes on every live tick)
+    if (untrack(() => app.summary)) api.largestFiles(1000).then(f => {
+      files = f;
+      const ids = new Set(f.map(x => x.id));
+      sel = new Set([...untrack(() => sel)].filter(id => ids.has(id)));
+    });
   });
 
   const now = Date.now() / 1000;

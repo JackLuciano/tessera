@@ -172,5 +172,18 @@
   "history.latest": "Letzter Scan",
   "history.changed": "Was hat sich geändert",
   "history.vs": "Letzter Scan vs. {date}",
-  "history.noChanges": "Kein Ordner hat sich um mehr als 10 MB geändert."
+  "history.noChanges": "Kein Ordner hat sich um mehr als 10 MB geändert.",
+  "settings.animations": "Animationen",
+  "settings.animationsHint": "Bewegung, Übergänge und die animierte Treemap",
+  "settings.live": "Änderungen live verfolgen",
+  "settings.liveHint": "Hält die Ergebnisse aktuell, wenn sich Dateien ändern – ohne neuen Scan",
+  "live.on": "Live",
+  "live.hint": "Änderungen werden verfolgt · {n} Ordner seit dem Scan aktualisiert",
+  "dupes.link": "Durch Hardlinks ersetzen",
+  "dupes.linkHint": "Alle Pfade bleiben, die Daten werden nur einmal gespeichert",
+  "dupes.linkTitle": "{n} Kopien verlinken?",
+  "dupes.linkText": "Jede überzählige Kopie wird durch einen Hardlink auf die behaltene Datei ersetzt. Alle Pfade funktionieren weiter, {size} werden frei.",
+  "dupes.linkWarn": "Verlinkte Kopien teilen sich den Inhalt: Wer eine bearbeitet, ändert alle. Funktioniert nur auf demselben Laufwerk.",
+  "dupes.linked": "{n} Kopien verlinkt, {size} frei",
+  "dupes.linkFailed": "{n} konnten nicht verlinkt werden: {first}"
 }

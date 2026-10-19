@@ -27,11 +27,27 @@ class AppStore {
   elevated = $state(false);
   paletteOpen = $state(false);
   mode = $state<'light' | 'dark' | 'system'>(load('tessera-mode-v', 'system'));
+  animations = $state<boolean>(load('tessera-anim', true));
+  /** Live change tracking (file system watcher) on/off. */
+  live = $state<boolean>(load('tessera-live', true));
+  /** Bumped when the watcher folded disk changes into the tree; size views refetch on it. */
+  liveVersion = $state(0);
+  /** Folders refreshed by the watcher since the last scan, for the header indicator. */
+  liveFolders = $state(0);
+  #liveTimer: ReturnType<typeof setTimeout> | null = null;
 
   get drive() { return this.drives.find(d => this.target.toUpperCase().startsWith(d.mount.toUpperCase())) ?? null; }
 
   async init() {
     await listen<{ files: number; dirs: number; bytes: number }>('scan-progress', e => { this.progress = e.payload; });
+    await listen<{ folders: number; delta: number; size: number; files: number }>('live-change', e => {
+      if (!this.summary || this.scanning) return;
+      this.liveFolders += e.payload.folders;
+      this.summary = { ...this.summary, size: e.payload.size, files: e.payload.files };
+      // Views refetch at most every 5 s, however busy the disk is
+      this.#liveTimer ??= setTimeout(() => { this.#liveTimer = null; this.liveVersion++; }, 5000);
+    });
+    api.setLiveWatch(this.live).catch(() => {});
     await this.refreshDrives();
     if (!this.target && this.drives.length) this.target = this.drives[0].mount;
     this.elevated = await api.isElevated().catch(() => false);
@@ -44,6 +60,7 @@ class AppStore {
     this.scanning = true; this.progress = { files: 0, dirs: 0, bytes: 0 };
     try {
       this.summary = await api.scan(path);
+      this.liveFolders = 0;
       this.explorerTarget = 0;
       this.version++;
       await this.refreshDrives();
@@ -67,6 +84,14 @@ class AppStore {
   }
 
   setPermanent(v: boolean) { this.permanentDelete = v; save('tessera-perm', v); }
+  setLive(v: boolean) {
+    this.live = v; save('tessera-live', v);
+    api.setLiveWatch(v).catch(e => this.toast(String(e), 'error'));
+  }
+  setAnimations(v: boolean) {
+    this.animations = v; save('tessera-anim', v);
+    document.documentElement.classList.toggle('no-anim', !v);
+  }
   setMode(m: 'light' | 'dark' | 'system') {
     this.mode = m; save('tessera-mode-v', m);
     try { localStorage.setItem('tessera-mode', m); } catch {}

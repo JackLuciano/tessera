@@ -25,6 +25,15 @@
   ];
 
   let scanDlg: HTMLDialogElement;
+  /** Estimated scan progress 0..0.95, or null when unknown (folder scan, or past the estimate). */
+  let scanPct = $derived.by(() => {
+    const d = app.drive;
+    const used = d ? d.total - d.available : 0;
+    // Only a whole-drive scan can be compared with the drive's used space
+    if (!d || !used || app.target.replace(/[\\/]+$/, '').toUpperCase() !== d.mount.replace(/[\\/]+$/, '').toUpperCase()) return null;
+    const p = app.progress.bytes / used;
+    return p >= 0.95 ? null : p;
+  });
   $effect(() => { if (app.scanning && !scanDlg.open) scanDlg.showModal(); else if (!app.scanning && scanDlg.open) scanDlg.close(); });
 
   onMount(() => {
@@ -51,8 +60,8 @@
 <div class="bg-blobs"><span></span><span></span><span></span></div>
 
 <div class="relative z-10 flex min-h-screen">
-  <aside class="flex flex-col w-60 shrink-0 p-4 gap-4 sticky top-0 h-screen">
-    <div class="glass flex-1 flex flex-col p-4 gap-6 overflow-y-auto">
+  <aside class="flex flex-col w-64 shrink-0 p-4 gap-4 sticky top-0 h-screen">
+    <div class="glass flex-1 flex flex-col p-4 gap-6 overflow-y-auto overflow-x-hidden">
       <div class="flex items-center gap-3 px-1">
         <Logo size={40} />
         <div>
@@ -61,7 +70,7 @@
         </div>
       </div>
 
-      <nav class="flex flex-col gap-1 pl-3">
+      <nav class="flex flex-col gap-1 pl-2 stagger">
         {#each NAV as n (n.v)}
           <button class="nav-item {app.view === n.v ? 'active' : ''}" onclick={() => (app.view = n.v)}>
             <Icon name={n.ico} /><span>{t('nav.' + n.v)}</span>
@@ -109,6 +118,9 @@
         <div class="text-xs muted truncate">{app.summary ? app.summary.root : t('header.noScan')}</div>
         <div class="font-semibold truncate">{t('nav.' + app.view)}</div>
       </div>
+      {#if app.live && app.summary}
+        <span class="live-pill" title={t('live.hint', { n: num(app.liveFolders) })}><i></i>{t('live.on')}</span>
+      {/if}
       <div class="ml-auto flex items-center gap-2">
         <button class="btn btn-ghost btn-sm gap-3 font-normal muted border hairline" onclick={() => (app.paletteOpen = true)}>
           <Icon name="search" size="1rem" />{t('palette.short')}<span class="flex gap-1"><kbd class="kbd kbd-xs">Ctrl</kbd><kbd class="kbd kbd-xs">K</kbd></span>
@@ -130,31 +142,34 @@
       </div>
     </header>
 
-    {#if app.view === 'overview'}<Overview />
-    {:else if app.view === 'explorer'}<Explorer />
-    {:else if app.view === 'cleanup'}<Cleanup />
-    {:else if app.view === 'files'}<Files />
-    {:else if app.view === 'dupes'}<Duplicates />
-    {:else if app.view === 'history'}<History />
-    {:else}<Settings />{/if}
+    {#key app.view}
+      <div class="view-enter flex flex-col gap-4">
+        {#if app.view === 'overview'}<Overview />
+        {:else if app.view === 'explorer'}<Explorer />
+        {:else if app.view === 'cleanup'}<Cleanup />
+        {:else if app.view === 'files'}<Files />
+        {:else if app.view === 'dupes'}<Duplicates />
+        {:else if app.view === 'history'}<History />
+        {:else}<Settings />{/if}
+      </div>
+    {/key}
   </main>
 </div>
 
 <dialog bind:this={scanDlg} class="modal" oncancel={e => e.preventDefault()}>
   <div class="modal-box glass text-center max-w-md">
-    <div class="scan-orb mb-5"></div>
+    <div class="scan-orb mb-5"><span class="dot"></span></div>
     <div class="text-lg font-semibold">{t('scan.title', { target: app.target })}</div>
     <div class="text-xs muted mb-4">{app.elevated ? t('scan.subMft') : t('scan.sub')}</div>
-    <div class="grid grid-cols-3 gap-2 mb-3">
-      <div class="rounded-xl p-2 soft"><div class="text-[11px] muted">{t('stat.files')}</div><div class="font-semibold mono">{num(app.progress.files)}</div></div>
-      <div class="rounded-xl p-2 soft"><div class="text-[11px] muted">{t('stat.folders')}</div><div class="font-semibold mono">{num(app.progress.dirs)}</div></div>
-      <div class="rounded-xl p-2 soft"><div class="text-[11px] muted">{t('scan.indexed')}</div><div class="font-semibold mono">{fmt(app.progress.bytes)}</div></div>
+    <div class="grid grid-cols-3 gap-2 mb-4">
+      <div class="tile-stat"><div>{t('stat.files')}</div><div>{num(app.progress.files)}</div></div>
+      <div class="tile-stat"><div>{t('stat.folders')}</div><div>{num(app.progress.dirs)}</div></div>
+      <div class="tile-stat"><div>{t('scan.indexed')}</div><div>{fmt(app.progress.bytes)}</div></div>
     </div>
-    {#if app.drive}
-      <progress class="progress progress-primary w-full" value={app.progress.bytes} max={app.drive.total - app.drive.available}></progress>
-    {:else}
-      <progress class="progress progress-primary w-full"></progress>
-    {/if}
+    <!-- Bytes found vs. used space is only an estimate (hard links and compressed files make the sum
+         exceed it), so the bar never claims "done" and turns into a flowing bar past 95% -->
+    <div class="progress-flow {scanPct === null ? 'indeterminate' : ''}"><i style="width:{(scanPct ?? 0) * 100}%"></i></div>
+    {#if scanPct !== null}<div class="text-[11px] muted mono mt-1.5">~{Math.round(scanPct * 100)}%</div>{/if}
     <button class="btn btn-ghost btn-sm mt-3" onclick={() => api.cancel()}>{t('common.cancel')}</button>
   </div>
 </dialog>

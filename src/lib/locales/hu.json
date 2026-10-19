@@ -172,5 +172,18 @@
   "history.latest": "Legutóbbi szkennelés",
   "history.changed": "Mi változott",
   "history.vs": "Legutóbbi szkennelés vs. {date}",
-  "history.noChanges": "Egyik mappa sem változott 10 MB-nál többet."
+  "history.noChanges": "Egyik mappa sem változott 10 MB-nál többet.",
+  "settings.animations": "Animációk",
+  "settings.animationsHint": "Mozgás, átmenetek és az animált treemap",
+  "settings.live": "Változások élő követése",
+  "settings.liveHint": "Újraszkennelés nélkül naprakészen tartja az eredményt, ahogy a fájlok változnak",
+  "live.on": "Élő",
+  "live.hint": "Változások követése · {n} mappa frissült a szkennelés óta",
+  "dupes.link": "Csere hard linkre",
+  "dupes.linkHint": "Minden útvonal megmarad, az adat csak egyszer foglal helyet",
+  "dupes.linkTitle": "{n} másolat összelinkelése?",
+  "dupes.linkText": "Minden felesleges másolat helyére hard link kerül a megtartott fájlra. Minden útvonal tovább működik, és {size} felszabadul.",
+  "dupes.linkWarn": "A linkelt másolatok közös tartalmon osztoznak: ha az egyiket szerkeszted, mind változik. Csak azonos meghajtón működik.",
+  "dupes.linked": "{n} másolat linkelve, {size} felszabadítva",
+  "dupes.linkFailed": "{n} nem linkelhető: {first}"
 }

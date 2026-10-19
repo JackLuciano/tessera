@@ -299,11 +299,153 @@ impl Tree {
             }
             cur = n.parent;
         }
-        // Keep the node in the arena (ids stay stable) but mark it empty.
-        let n = &mut self.nodes[id as usize];
-        n.size = 0;
-        n.parent = NO_PARENT;
+        // Keep the nodes in the arena (ids stay stable) but zero the whole subtree, so arena-wide
+        // queries (largest files, duplicates) that filter on size never return detached nodes.
+        self.nodes[id as usize].parent = NO_PARENT;
+        self.zero_subtree(id);
     }
+
+    fn zero_subtree(&mut self, id: u32) {
+        let mut stack = vec![id];
+        while let Some(i) = stack.pop() {
+            let n = &mut self.nodes[i as usize];
+            n.size = 0;
+            stack.append(&mut n.children);
+        }
+    }
+
+    /// Deepest existing directory node on the way to `path` (the root if `path` is outside the tree).
+    pub fn find_dir(&self, path: &Path) -> u32 {
+        let Ok(rel) = path.strip_prefix(&self.root_path) else { return 0 };
+        let mut cur = 0u32;
+        for part in rel.components() {
+            let part = part.as_os_str().to_string_lossy();
+            let next = self.nodes[cur as usize].children.iter().copied().find(|c| {
+                let n = &self.nodes[*c as usize];
+                n.kind == Kind::Dir && names_eq(&n.name, &part)
+            });
+            match next {
+                Some(c) => cur = c,
+                None => break,
+            }
+        }
+        cur
+    }
+
+    /// Re-read one directory after a change on disk, without rescanning what is below it:
+    /// existing sub-folders keep their nodes, new sub-folders are walked, files are re-listed.
+    /// The size difference is propagated to every ancestor. Returns the change in bytes.
+    pub fn refresh_dir(&mut self, id: u32) -> i64 {
+        let path = self.path_of(id);
+        let Ok(rd) = fs::read_dir(&path) else {
+            // The folder itself is gone: drop it (the root is never removed)
+            if id == 0 {
+                return 0;
+            }
+            let before = self.nodes[id as usize].size as i64;
+            self.remove(id);
+            return -before;
+        };
+        let progress = Progress::new();
+        let path_lower = path.to_string_lossy().to_lowercase();
+        let old_children = std::mem::take(&mut self.nodes[id as usize].children);
+        let mut keep: Vec<u32> = Vec::new();
+        let mut new_dirs: Vec<(PathBuf, String)> = Vec::new();
+        let mut fresh: Vec<Scanned> = Vec::new();
+        let mut bucket = Scanned {
+            name: String::new(), kind: Kind::Bucket, size: 0, files: 0, dirs: 0, cats: [0; CAT_COUNT], modified: 0, children: Vec::new(),
+        };
+        for entry in rd.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_symlink() {
+                continue;
+            }
+            let fname = entry.file_name().to_string_lossy().into_owned();
+            if ft.is_dir() {
+                let existing = old_children.iter().copied().find(|c| {
+                    let n = &self.nodes[*c as usize];
+                    n.kind == Kind::Dir && n.name == fname
+                });
+                match existing {
+                    Some(c) => keep.push(c),
+                    None => new_dirs.push((entry.path(), fname)),
+                }
+                continue;
+            }
+            let Ok(md) = entry.metadata() else { continue };
+            let len = md.len();
+            let cat = Cat::classify(&fname, &path_lower);
+            let modified = mtime(&md);
+            if len >= FILE_NODE_MIN {
+                let mut cats = [0; CAT_COUNT];
+                cats[cat.idx()] = len;
+                fresh.push(Scanned { name: fname, kind: Kind::File, size: len, files: 1, dirs: 0, cats, modified, children: Vec::new() });
+            } else {
+                bucket.size += len;
+                bucket.files += 1;
+                bucket.cats[cat.idx()] += len;
+                bucket.modified = bucket.modified.max(modified);
+            }
+        }
+        let walked: Vec<Scanned> = new_dirs.into_par_iter().map(|(p, n)| walk(&p, n, &progress)).collect();
+        fresh.extend(walked);
+        if bucket.files > 0 {
+            bucket.name = format!("{} small files", bucket.files);
+            fresh.push(bucket);
+        }
+
+        // Detach everything that is not carried over (old file nodes, bucket, vanished folders)
+        for c in old_children.iter().copied().filter(|c| !keep.contains(c)) {
+            self.nodes[c as usize].parent = NO_PARENT;
+            self.zero_subtree(c);
+        }
+        let mut kids = keep;
+        for s in fresh {
+            kids.push(flatten(s, id, &mut self.nodes));
+        }
+        kids.sort_by_key(|c| std::cmp::Reverse(self.nodes[*c as usize].size));
+
+        // New totals for this folder, then push the difference up the ancestor chain
+        let (mut size, mut files, mut dirs, mut cats, mut modified) = (0u64, 0u64, 0u64, [0u64; CAT_COUNT], 0u64);
+        for c in &kids {
+            let n = &self.nodes[*c as usize];
+            size += n.size;
+            files += n.files;
+            dirs += n.dirs + u64::from(n.kind == Kind::Dir);
+            modified = modified.max(n.modified);
+            for (t, s) in cats.iter_mut().zip(n.cats) {
+                *t += s;
+            }
+        }
+        let n = &mut self.nodes[id as usize];
+        let (old_size, old_files, old_dirs, old_cats) = (n.size, n.files, n.dirs, n.cats);
+        n.children = kids;
+        (n.size, n.files, n.dirs, n.cats, n.modified) = (size, files, dirs, cats, modified.max(n.modified));
+        let mut cur = n.parent;
+        while cur != NO_PARENT {
+            let a = &mut self.nodes[cur as usize];
+            a.size = (a.size + size).saturating_sub(old_size);
+            a.files = (a.files + files).saturating_sub(old_files);
+            a.dirs = (a.dirs + dirs).saturating_sub(old_dirs);
+            for ((t, new), old) in a.cats.iter_mut().zip(cats).zip(old_cats) {
+                *t = (*t + new).saturating_sub(old);
+            }
+            cur = a.parent;
+        }
+        // Keep siblings ordered largest first after the size change
+        let parent = self.nodes[id as usize].parent;
+        if parent != NO_PARENT {
+            let mut sib = std::mem::take(&mut self.nodes[parent as usize].children);
+            sib.sort_by_key(|c| std::cmp::Reverse(self.nodes[*c as usize].size));
+            self.nodes[parent as usize].children = sib;
+        }
+        size as i64 - old_size as i64
+    }
+}
+
+/// File names compare case-insensitively on Windows and macOS (default APFS), exactly elsewhere.
+fn names_eq(a: &str, b: &str) -> bool {
+    if cfg!(any(windows, target_os = "macos")) { a.to_lowercase() == b.to_lowercase() } else { a == b }
 }
 
 #[cfg(test)]
@@ -340,6 +482,38 @@ mod tests {
         tree.remove(big);
         assert_eq!(tree.nodes[0].size, 5);
         assert_eq!(tree.nodes[0].files, 1);
+        // Files below a removed folder no longer count anywhere
+        assert_eq!(tree.nodes[blob as usize].size, 0);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn refreshes_one_folder_incrementally() {
+        let dir = std::env::temp_dir().join(format!("tessera-refresh-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("a/deep")).unwrap();
+        fs::write(dir.join("a/deep/x.bin"), vec![0u8; 100]).unwrap();
+        fs::write(dir.join("a/one.txt"), b"12345").unwrap();
+        let mut tree = scan(&dir, &Progress::new());
+        assert_eq!(tree.nodes[0].size, 105);
+
+        // Grow a file, add a new folder with a file, then refresh only "a"
+        fs::write(dir.join("a/one.txt"), b"1234567890").unwrap();
+        fs::create_dir_all(dir.join("a/new")).unwrap();
+        fs::write(dir.join("a/new/y.bin"), vec![0u8; 50]).unwrap();
+        let a = tree.find_dir(&dir.join("a").join("new"));
+        assert_eq!(tree.nodes[a as usize].name, "a", "new folder is not in the tree yet");
+        let delta = tree.refresh_dir(a);
+        assert_eq!(delta, 55);
+        assert_eq!(tree.nodes[0].size, 160);
+        assert_eq!(tree.nodes[0].files, 3);
+        assert_ne!(tree.find_dir(&dir.join("a").join("new")), a);
+
+        // Deleting a folder on disk and refreshing it drops it from the totals
+        fs::remove_dir_all(dir.join("a/deep")).unwrap();
+        let deep = tree.find_dir(&dir.join("a").join("deep"));
+        assert_eq!(tree.refresh_dir(deep), -100);
+        assert_eq!(tree.nodes[0].size, 60);
         fs::remove_dir_all(&dir).unwrap();
     }
 }

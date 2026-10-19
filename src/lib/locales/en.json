@@ -172,5 +172,18 @@
   "history.latest": "Latest scan",
   "history.changed": "What changed",
   "history.vs": "Latest scan vs {date}",
-  "history.noChanges": "No folder changed by more than 10 MB."
+  "history.noChanges": "No folder changed by more than 10 MB.",
+  "settings.animations": "Animations",
+  "settings.animationsHint": "Motion, transitions and the animated treemap",
+  "settings.live": "Watch for live changes",
+  "settings.liveHint": "Keeps the results up to date as files change, without a rescan",
+  "live.on": "Live",
+  "live.hint": "Watching for changes · {n} folders updated since the scan",
+  "dupes.link": "Replace with hard links",
+  "dupes.linkHint": "Keep every path, store the data only once",
+  "dupes.linkTitle": "Hard-link {n} copies?",
+  "dupes.linkText": "Each extra copy is replaced by a hard link to the kept file. Every path keeps working and {size} is freed.",
+  "dupes.linkWarn": "Linked copies share their contents: editing one changes all of them. Only works within the same drive.",
+  "dupes.linked": "Linked {n} copies, freed {size}",
+  "dupes.linkFailed": "{n} could not be linked: {first}"
 }

@@ -1,46 +1,77 @@
-# Builds installers for Windows, macOS and Linux and attaches them to a draft GitHub Release.
-# Runs only on a version tag (v1.2.3) or when started by hand, so it never burns Actions minutes on regular pushes.
-name: Release
+# macOS and Linux installers for an existing release.
+#
+# Windows is built and published locally with scripts/release.ps1. That script starts this workflow only
+# after the Windows release is up, and the `gate` job re-checks it, so Actions minutes are never spent on
+# a version whose Windows build failed. The assets (and the merged latest.json for auto-update) are added
+# to the same GitHub Release.
+name: Release (macOS + Linux)
 
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
+      tag:
+        description: 'Existing release tag with the Windows build, e.g. v0.1.0'
+        required: true
+        type: string
       platforms:
         description: 'Platforms to build'
         type: choice
         default: all
-        options: [all, windows, macos, linux]
+        options: [all, macos, linux]
 
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: true
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
 jobs:
+  gate:
+    name: Windows release present
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      release_id: ${{ steps.check.outputs.release_id }}
+      matrix: ${{ steps.check.outputs.matrix }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json databaseId,assets > release.json
+          names=$(jq -r '.assets[].name' release.json)
+          echo "$names"
+          for want in -setup.exe -setup.exe.sig latest.json; do
+            grep -q -- "$want\$" <<<"$names" || { echo "::error::Release $TAG has no *$want asset. Publish the Windows build first (scripts/release.ps1)."; exit 1; }
+          done
+          jq -e '.platforms["windows-x86_64"]' <(gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -p latest.json -O -) > /dev/null \
+            || { echo "::error::latest.json has no windows-x86_64 entry"; exit 1; }
+          echo "release_id=$(jq .databaseId release.json)" >> "$GITHUB_OUTPUT"
+          case "$PLATFORMS" in
+            macos) m='[{"name":"macos","os":"macos-latest","args":"--target universal-apple-darwin"}]' ;;
+            linux) m='[{"name":"linux","os":"ubuntu-22.04","args":""}]' ;;
+            *)     m='[{"name":"macos","os":"macos-latest","args":"--target universal-apple-darwin"},{"name":"linux","os":"ubuntu-22.04","args":""}]' ;;
+          esac
+          echo "matrix=$m" >> "$GITHUB_OUTPUT"
+
   build:
     name: ${{ matrix.name }}
+    needs: gate
     strategy:
       fail-fast: false
+      # One at a time: both jobs rewrite latest.json on the release and must not race
+      max-parallel: 1
       matrix:
-        include:
-          - name: windows
-            os: windows-latest
-            args: ''
-          - name: macos
-            os: macos-latest
-            # Universal binary: one download for Intel and Apple Silicon
-            args: '--target universal-apple-darwin'
-          - name: linux
-            os: ubuntu-22.04
-            args: ''
+        include: ${{ fromJSON(needs.gate.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
-    if: ${{ github.event_name == 'push' || inputs.platforms == 'all' || inputs.platforms == matrix.name }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
 
       - name: Linux system dependencies
         if: matrix.name == 'linux'
@@ -49,8 +80,6 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - uses: pnpm/action-setup@v4
-        with:
-          version: 11
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -68,13 +97,8 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Optional until auto-update is switched on; see README › Releases
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
-          releaseName: 'Tessera v__VERSION__'
-          releaseBody: 'See the changelog below. Download the installer for your platform from Assets.'
-          releaseDraft: true
-          prerelease: false
+          releaseId: ${{ needs.gate.outputs.release_id }}
           args: ${{ matrix.args }}

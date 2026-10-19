@@ -44,7 +44,11 @@
       "nsis": {
         "installMode": "both",
         "displayLanguageSelector": true,
-        "languages": ["English", "Hungarian", "German"],
+        "languages": ["English", "German", "Spanish", "French", "Hungarian", "Polish"],
+        "customLanguageFiles": {
+          "Hungarian": "installer/Hungarian.nsh",
+          "Polish": "installer/Polish.nsh"
+        },
         "installerIcon": "icons/icon.ico",
         "startMenuFolder": "Tessera"
       },

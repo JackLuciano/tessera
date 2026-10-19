@@ -35,6 +35,14 @@
         {/each}
       </div>
     </div>
+    <div class="flex items-center gap-4 py-4">
+      <div class="flex-1"><div class="font-medium text-sm">{t('settings.animations')}</div><div class="text-xs muted">{t('settings.animationsHint')}</div></div>
+      <input type="checkbox" class="toggle toggle-primary" checked={app.animations} onchange={e => app.setAnimations((e.target as HTMLInputElement).checked)} />
+    </div>
+    <div class="flex items-center gap-4 py-4">
+      <div class="flex-1"><div class="font-medium text-sm">{t('settings.live')}</div><div class="text-xs muted">{t('settings.liveHint')}</div></div>
+      <input type="checkbox" class="toggle toggle-primary" checked={app.live} onchange={e => app.setLive((e.target as HTMLInputElement).checked)} />
+    </div>
   </div>
 
   <h2 class="text-lg font-semibold mt-6 mb-1">{t('settings.deletion')}</h2>

@@ -6,12 +6,18 @@
 import en from './locales/en.json';
 import hu from './locales/hu.json';
 import de from './locales/de.json';
+import es from './locales/es.json';
+import fr from './locales/fr.json';
+import pl from './locales/pl.json';
 
 type Dict = Record<string, string>;
 export const LOCALES: Record<string, { name: string; dict: Dict }> = {
   en: { name: 'English', dict: en },
-  hu: { name: 'Magyar', dict: hu },
   de: { name: 'Deutsch', dict: de },
+  es: { name: 'Español', dict: es },
+  fr: { name: 'Français', dict: fr },
+  hu: { name: 'Magyar', dict: hu },
+  pl: { name: 'Polski', dict: pl },
 };
 
 function detect(): string {

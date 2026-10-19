@@ -27,16 +27,17 @@ a zoomable treemap and smart cleanup that knows what's safe to delete.
 |---|---|
 | 🚀 **NTFS MFT fast path** | Run as administrator and Tessera reads the Master File Table straight from the volume — a whole drive in seconds, like WizTree. |
 | ⚡ **Fast parallel scanner** | Without admin rights (or on other file systems) Rust + rayon walk every folder on all CPU cores. Junctions and symlinks are skipped so nothing is counted twice. |
-| 👯 **Duplicate finder** | Size → quick head/tail hash → full **BLAKE3** confirmation. Keep newest, oldest or shortest path and remove the rest. |
+| 👯 **Duplicate finder** | Size → quick head/tail hash → full **BLAKE3** confirmation. Keep newest, oldest or shortest path and remove the rest — or **replace them with hard links** so every path keeps working while the data is stored once. |
+| 🔴 **Live changes** | After a scan Tessera watches the drive (ReadDirectoryChangesW / FSEvents / inotify) and re-reads only the folders that changed, so the numbers stay current without a rescan. |
 | 📈 **History & diffs** | Every scan saves a small snapshot. Chart usage over time and see exactly which folders grew or shrank. |
 | ⌨️ **Command palette** | <kbd>Ctrl</kbd>+<kbd>K</kbd> to jump anywhere, rescan, switch drives or open a big file. |
 | 🔄 **Auto-update** | Signed updates from GitHub Releases, downloaded in the background and installed when you restart. |
-| 🧩 **Zoomable treemap** | Squarified treemap on canvas — click to zoom in with a smooth animation, Backspace to go up, right-click for actions. |
+| 🧩 **Zoomable treemap** | Nested, cushion-shaded treemap on canvas, several levels deep — click any folder to zoom in with a smooth animation, Backspace to go up, right-click for actions. |
 | 🍩 **Breakdown by type** | Video, games, dev, apps, system, images, caches, archives, documents — at a glance. |
 | 🧹 **Smart cleanup** | Finds regenerable junk: `node_modules`, build caches (`.next`, `target`, `__pycache__`), package-manager caches, browser caches, temp folders. |
 | 📄 **Largest files** | Sortable, filterable list with "not modified in 6 months" detection and bulk delete. |
 | 🗑️ **Safe by default** | Everything goes to the Recycle Bin / Trash. Permanent delete is opt-in, needs confirmation, and system locations are always protected. |
-| 🌍 **Multilingual** | English, Magyar, Deutsch — detected from your system, English fallback. |
+| 🌍 **Multilingual** | English, Deutsch, Español, Français, Magyar, Polski — detected from your system, English fallback. |
 | 🌗 **Light & dark** | Follows the system or pick your own. |
 | 🪶 **Tiny** | ~5 MB app thanks to Tauri — uses the OS webview instead of bundling Chromium. |
 
@@ -74,7 +75,7 @@ Grab the latest installer from **[Releases](../../releases)**:
 | Linux | `.AppImage`, `.deb` or `.rpm` |
 
 The Windows setup lets you install **for the current user** (no admin) **or for all users**, in English,
-Magyar or Deutsch. It creates a Start menu entry, registers Tessera in **Settings › Apps** (Add/Remove
+Deutsch, Español, Français, Magyar or Polski. It creates a Start menu entry, registers Tessera in **Settings › Apps** (Add/Remove
 Programs) and ships a proper uninstaller. Prefer group-policy deployment? Use the `.msi`.
 
 > **Tip:** On Windows, folders like `C:\Windows\System32\config` need administrator rights to read.
@@ -120,13 +121,22 @@ translate the values and register it in [`src/lib/i18n.svelte.ts`](src/lib/i18n.
 
 ## 🚀 Releases
 
-Releases are built by [GitHub Actions](.github/workflows/release.yml) for all three platforms when a `v*` tag is
-pushed, or manually from the Actions tab (pick one platform to save minutes). The result is a **draft** release
-to review before publishing.
+Releases are cut in two steps, so GitHub Actions minutes are only spent once Windows is known to be good:
 
-```bash
-git tag v0.1.0 && git push origin v0.1.0
-```
+1. **Windows, locally.** On an up-to-date, clean `main`, run
+
+   ```powershell
+   ./scripts/release.ps1             # -DryRun to only build, -WindowsOnly to stop after step 1
+   ```
+
+   It builds the signed installers, writes `latest.json`, tags `vX.Y.Z` and publishes the GitHub Release.
+2. **macOS + Linux, on Actions.** Only if step 1 succeeded, the script starts
+   [the release workflow](.github/workflows/release.yml), which first checks that the release really has the
+   Windows installer, signature and `latest.json`, then adds the universal macOS `.dmg` and the Linux
+   `.AppImage` / `.deb` / `.rpm` and merges their entries into `latest.json`.
+   To rerun it by hand: `gh workflow run release.yml -f tag=vX.Y.Z`.
+
+Bump the version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` before releasing.
 
 **Auto-update signing.** Updates are verified with a minisign key; the public half is in
 `src-tauri/tauri.conf.json`. Maintainers keep the private key in `~/.tauri/tessera.key` (local builds pick it up
@@ -140,9 +150,11 @@ for CI. Contributors without the key still get a working build — just without 
 - [x] Usage history & snapshot diffs
 - [x] Auto-update from GitHub Releases (signed, via `tauri-plugin-updater`)
 - [x] Command palette (Ctrl+K)
-- [ ] Watch for live changes (USN Journal / FSEvents / fanotify)
-- [ ] Hardlink-based dedupe instead of deleting
-- [ ] More languages — [help translate!](CONTRIBUTING.md#translations)
+- [x] Watch for live changes (ReadDirectoryChangesW / FSEvents / inotify)
+- [x] Hardlink-based dedupe instead of deleting
+- [x] More languages: Español, Français, Polski
+- [ ] Read the NTFS USN Journal to catch up on changes made while Tessera was closed
+- [ ] Even more languages — [help translate!](CONTRIBUTING.md#translations)
 
 ## 🤝 Contributing
 

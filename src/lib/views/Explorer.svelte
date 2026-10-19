@@ -13,7 +13,8 @@
 
   async function load(id: number) {
     try {
-      const n = await api.node(id, 2, 120);
+      // Deep enough for the nested treemap; blocks under 0.05% of the view are pruned in Rust
+      const n = await api.node(id, 6, 150, 0.0005);
       crumbs = await api.ancestors(id);
       node = n;
       app.explorerTarget = id;
@@ -24,9 +25,9 @@
   }
 
   $effect(() => {
-    void app.version;
-    // Only re-run on rescans/deletes, not when load() itself updates explorerTarget
-    if (app.summary) untrack(() => load(app.explorerTarget));
+    void app.version; void app.liveVersion;
+    // Only re-run on rescans/deletes/live changes, not when load() updates explorerTarget or summary ticks
+    untrack(() => { if (app.summary) load(app.explorerTarget); });
   });
 
   const up = () => crumbs.length > 1 && load(crumbs[crumbs.length - 2][0]);
@@ -62,23 +63,28 @@
         <div class="min-w-0"><div class="font-semibold truncate">{crumbs.at(-1)?.[1]}</div><div class="text-xs muted mono truncate selectable">{node.path}</div></div>
       </div>
       <div class="grid grid-cols-2 gap-2">
-        <div class="rounded-xl p-2.5 soft"><div class="text-[11px] muted">{t('stat.size')}</div><div class="font-semibold mono">{fmt(node.size)}</div></div>
-        <div class="rounded-xl p-2.5 soft"><div class="text-[11px] muted">{t('stat.files')}</div><div class="font-semibold mono">{num(node.files)}</div></div>
+        <div class="tile-stat"><div>{t('stat.size')}</div><div>{fmt(node.size)}</div></div>
+        <div class="tile-stat"><div>{t('stat.files')}</div><div>{num(node.files)}</div></div>
       </div>
       <button class="btn btn-sm" onclick={() => reveal(node!.path)}><Icon name="folder" size="1rem" />{t('action.reveal')}</button>
       <div class="text-xs uppercase tracking-wider muted font-semibold mt-1">{t('explorer.contents')}</div>
-      <div class="flex flex-col gap-0.5 overflow-y-auto -mx-1" style="max-height:calc(100vh - 380px)">
-        {#each node.children as c (c.id)}
-          <button class="row-hover flex items-center gap-2.5 px-2 py-1.5 text-left" onclick={() => c.kind === 'dir' && load(c.id)}
-            oncontextmenu={e => ctx(e, c)} onmouseenter={() => tm?.highlight(c.id)} onmouseleave={() => tm?.highlight(null)}>
-            <span class="w-2.5 h-2.5 rounded-sm shrink-0" style="background:var(--cat-{c.cat})"></span>
-            <Icon name={c.kind === 'dir' ? 'folder' : CATS[c.cat].ico} size=".9rem" style="opacity:.6" />
-            <span class="flex-1 truncate text-sm">{c.name}</span>
-            <span class="text-[11px] muted mono">{((c.size / (node.size || 1)) * 100).toFixed(0)}%</span>
-            <span class="mono text-xs w-16 text-right">{fmt(c.size)}</span>
-          </button>
-        {/each}
-      </div>
+      {#key node.id}
+        <div class="flex flex-col gap-0.5 overflow-y-auto -mx-1 stagger" style="max-height:calc(100vh - 380px)">
+          {#each node.children as c (c.id)}
+            {@const pct = (c.size / (node.size || 1)) * 100}
+            <button class="row-hover relative flex items-center gap-2.5 px-2 py-1.5 text-left overflow-hidden" onclick={() => c.kind === 'dir' && load(c.id)}
+              oncontextmenu={e => ctx(e, c)} onmouseenter={() => tm?.highlight(c.id)} onmouseleave={() => tm?.highlight(null)}>
+              <!-- Share-of-parent bar behind the row -->
+              <span class="share-bar" style="width:{pct}%;background:var(--cat-{c.cat})"></span>
+              <span class="w-2.5 h-2.5 rounded-sm shrink-0" style="background:var(--cat-{c.cat})"></span>
+              <Icon name={c.kind === 'dir' ? 'folder' : CATS[c.cat].ico} size=".9rem" style="opacity:.6" />
+              <span class="flex-1 truncate text-sm">{c.name}</span>
+              <span class="text-[11px] muted mono">{pct.toFixed(0)}%</span>
+              <span class="mono text-xs w-16 text-right">{fmt(c.size)}</span>
+            </button>
+          {/each}
+        </div>
+      {/key}
     </div>
   </section>
 {/if}

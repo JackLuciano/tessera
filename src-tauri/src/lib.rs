@@ -3,6 +3,7 @@ mod history;
 #[cfg(windows)]
 mod mft;
 mod scanner;
+mod watch;
 
 use parking_lot::Mutex;
 use scanner::{Cat, Kind, Progress, Tree, CAT_COUNT, NO_PARENT};
@@ -13,11 +14,74 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-#[derive(Default)]
 struct AppState {
     tree: Mutex<Option<Tree>>,
     progress: Mutex<Option<Arc<Progress>>>,
     dup_progress: Mutex<Option<Arc<dupes::DupProgress>>>,
+    watch: Mutex<Option<watch::LiveWatch>>,
+    live: AtomicBool,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self { tree: Mutex::default(), progress: Mutex::default(), dup_progress: Mutex::default(), watch: Mutex::default(), live: AtomicBool::new(true) }
+    }
+}
+
+#[derive(Serialize, Clone)]
+struct LiveEvent {
+    folders: usize,
+    delta: i64,
+    size: u64,
+    files: u64,
+}
+
+/// Watch the scanned root and fold changes into the tree as they happen.
+fn start_watch(app: &AppHandle, state: &AppState) {
+    *state.watch.lock() = None;
+    if !state.live.load(Ordering::Relaxed) {
+        return;
+    }
+    let Some(root) = state.tree.lock().as_ref().map(|t| t.root_path.clone()) else { return };
+    let handle = app.clone();
+    let res = watch::start(&root, move |dirs| {
+        let st = handle.state::<AppState>();
+        let ev = {
+            let mut g = st.tree.lock();
+            let Some(t) = g.as_mut() else { return };
+            let mut ids: Vec<u32> = dirs.iter().map(|d| t.find_dir(d)).collect();
+            ids.sort_unstable();
+            ids.dedup();
+            let delta: i64 = ids.iter().map(|id| t.refresh_dir(*id)).sum();
+            LiveEvent { folders: ids.len(), delta, size: t.nodes[0].size, files: t.nodes[0].files }
+        };
+        let _ = handle.emit("live-change", ev);
+    });
+    match res {
+        Ok(w) => *state.watch.lock() = Some(w),
+        Err(e) => eprintln!("live watch unavailable for {}: {e}", root.display()),
+    }
+}
+
+/// Turn live change tracking on or off (Settings).
+#[tauri::command]
+fn set_live_watch(enabled: bool, app: AppHandle, state: State<'_, AppState>) {
+    state.live.store(enabled, Ordering::Relaxed);
+    if enabled {
+        if state.watch.lock().is_none() {
+            start_watch(&app, &state);
+        }
+    } else {
+        *state.watch.lock() = None;
+    }
+}
+
+/// Current totals, for views to refresh after live changes.
+#[tauri::command]
+fn get_summary(state: State<'_, AppState>) -> Result<ScanSummary, String> {
+    let g = state.tree.lock();
+    let t = g.as_ref().ok_or("no scan yet")?;
+    Ok(summary(t, "live"))
 }
 
 #[derive(Serialize)]
@@ -103,6 +167,8 @@ async fn scan(path: String, app: AppHandle, state: State<'_, AppState>) -> Resul
     if !root.exists() {
         return Err(format!("{path} does not exist"));
     }
+    // The old watcher would keep refreshing a tree that is about to be replaced
+    *state.watch.lock() = None;
     let progress = Progress::new();
     *state.progress.lock() = Some(progress.clone());
 
@@ -153,6 +219,7 @@ async fn scan(path: String, app: AppHandle, state: State<'_, AppState>) -> Resul
         eprintln!("could not save history snapshot: {e}");
     }
     *state.tree.lock() = Some(tree);
+    start_watch(&app, &state);
     Ok(s)
 }
 
@@ -226,6 +293,40 @@ async fn find_duplicates(app: AppHandle, state: State<'_, AppState>) -> Result<V
     res
 }
 
+/// Replace duplicate copies with hard links to the kept file: every path keeps working, the space
+/// is freed. `pairs` are (keep, duplicate) node ids. Needs both files on the same volume.
+#[tauri::command]
+async fn hardlink_dupes(pairs: Vec<(u32, u32)>, state: State<'_, AppState>) -> Result<DeleteResult, String> {
+    let jobs: Vec<(PathBuf, PathBuf, u64)> = {
+        let g = state.tree.lock();
+        let t = g.as_ref().ok_or("no scan yet")?;
+        pairs
+            .iter()
+            .filter(|(k, d)| (*k as usize) < t.nodes.len() && (*d as usize) < t.nodes.len() && k != d)
+            .map(|(k, d)| (t.path_of(*k), t.path_of(*d), t.nodes[*d as usize].size))
+            .collect()
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let (mut freed, mut deleted, mut failed) = (0, 0, Vec::new());
+        for (keep, dup, size) in jobs {
+            if is_protected(&dup) {
+                failed.push(format!("{}: protected system location", dup.display()));
+                continue;
+            }
+            match dupes::hardlink(&keep, &dup) {
+                Ok(()) => {
+                    freed += size;
+                    deleted += 1;
+                }
+                Err(e) => failed.push(format!("{}: {e}", dup.display())),
+            }
+        }
+        DeleteResult { freed, deleted, failed }
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn cancel_duplicates(state: State<'_, AppState>) {
     if let Some(p) = state.dup_progress.lock().as_ref() {
@@ -269,14 +370,17 @@ struct NodeDto {
     children: Vec<NodeDto>,
 }
 
-fn dto(t: &Tree, id: u32, depth: u32, max_children: usize) -> NodeDto {
+/// `min_size` prunes grandchildren and deeper levels that would be too small to see in the treemap;
+/// direct children are always listed (up to `max_children`) for the side panel.
+fn dto(t: &Tree, id: u32, depth: u32, max_children: usize, min_size: u64, top: bool) -> NodeDto {
     let n = &t.nodes[id as usize];
+    let floor = if top { 1 } else { min_size.max(1) };
     let children = if depth > 0 {
         n.children
             .iter()
-            .filter(|c| t.nodes[**c as usize].size > 0)
+            .filter(|c| t.nodes[**c as usize].size >= floor)
             .take(max_children)
-            .map(|c| dto(t, *c, depth - 1, max_children))
+            .map(|c| dto(t, *c, depth - 1, max_children, min_size, false))
             .collect()
     } else {
         Vec::new()
@@ -298,13 +402,18 @@ fn dto(t: &Tree, id: u32, depth: u32, max_children: usize) -> NodeDto {
 
 /// A node with `depth` levels of children (largest first, capped per level).
 #[tauri::command]
-fn get_node(id: u32, depth: u32, max_children: usize, state: State<'_, AppState>) -> Result<NodeDto, String> {
+fn get_node(id: u32, depth: u32, max_children: usize, min_frac: Option<f64>, state: State<'_, AppState>) -> Result<NodeDto, String> {
     let g = state.tree.lock();
     let t = g.as_ref().ok_or("no scan yet")?;
     if id as usize >= t.nodes.len() {
         return Err("unknown node".into());
     }
-    Ok(dto(t, id, depth.min(3), max_children.clamp(1, 400)))
+    // Without a size floor deep requests could serialize the whole drive, so cap depth harder then
+    let (max_depth, min_size) = match min_frac {
+        Some(f) if f > 0.0 => (6, (t.nodes[id as usize].size as f64 * f.min(1.0)) as u64),
+        _ => (3, 0),
+    };
+    Ok(dto(t, id, depth.min(max_depth), max_children.clamp(1, 400), min_size, true))
 }
 
 /// Ancestor chain (root first) for breadcrumbs.
@@ -504,7 +613,8 @@ pub fn run() {
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             list_drives, scan, cancel_scan, get_node, get_ancestors, largest_files, find_junk, delete_nodes, reveal,
-            is_elevated, relaunch_as_admin, find_duplicates, cancel_duplicates, history_list, history_diff
+            is_elevated, relaunch_as_admin, find_duplicates, cancel_duplicates, hardlink_dupes, history_list, history_diff,
+            set_live_watch, get_summary
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

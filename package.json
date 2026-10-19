@@ -4,6 +4,7 @@
   "private": true,
   "description": "Fast, good-looking disk space analyzer for Windows, macOS and Linux",
   "type": "module",
+  "packageManager": "pnpm@11.5.2",
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",

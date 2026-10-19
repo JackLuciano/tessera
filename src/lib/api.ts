@@ -17,7 +17,7 @@ export const api = {
   drives: () => invoke<Drive[]>('list_drives'),
   scan: (path: string) => invoke<ScanSummary>('scan', { path }),
   cancel: () => invoke<void>('cancel_scan'),
-  node: (id: number, depth = 2, maxChildren = 80) => invoke<TreeNode>('get_node', { id, depth, maxChildren }),
+  node: (id: number, depth = 2, maxChildren = 80, minFrac?: number) => invoke<TreeNode>('get_node', { id, depth, maxChildren, minFrac }),
   ancestors: (id: number) => invoke<[number, string][]>('get_ancestors', { id }),
   largestFiles: (limit = 300) => invoke<FileEntry[]>('largest_files', { limit }),
   junk: () => invoke<JunkGroup[]>('find_junk'),
@@ -27,6 +27,10 @@ export const api = {
   relaunchAsAdmin: () => invoke<void>('relaunch_as_admin'),
   duplicates: () => invoke<DupGroup[]>('find_duplicates'),
   cancelDuplicates: () => invoke<void>('cancel_duplicates'),
+  /** Replace duplicates with hard links; pairs are [keep, duplicate] node ids. */
+  hardlinkDupes: (pairs: [number, number][]) => invoke<DeleteResult>('hardlink_dupes', { pairs }),
+  setLiveWatch: (enabled: boolean) => invoke<void>('set_live_watch', { enabled }),
+  summary: () => invoke<ScanSummary>('get_summary'),
   historyList: (root: string) => invoke<SnapshotInfo[]>('history_list', { root }),
   historyDiff: (ts: number) => invoke<DiffRow[]>('history_diff', { ts }),
 };
