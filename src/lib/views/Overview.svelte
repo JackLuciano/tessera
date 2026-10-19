@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { app } from '../store.svelte';
   import { api, fmt, num, ago, CATS, type TreeNode, type FileEntry } from '../api';
   import { t } from '../i18n.svelte';
@@ -11,8 +12,9 @@
   let top = $state<FileEntry[]>([]);
 
   $effect(() => {
-    void app.version;
-    if (!app.summary) return;
+    void app.version; void app.liveVersion;
+    // summary itself changes on every live update; only the version counters should trigger a refetch
+    if (!untrack(() => app.summary)) return;
     api.node(0, 1, 8).then(n => (root = n));
     api.largestFiles(6).then(f => (top = f));
   });
@@ -57,9 +59,9 @@
         <div class="text-4xl font-bold tracking-tight mono grad-text">{fmt(total - used)}</div>
         <div class="text-sm muted mt-1">{t('stat.ofUsed', { total: fmt(total), used: fmt(used) })}</div>
         <div class="grid grid-cols-3 gap-2 mt-4">
-          <div class="rounded-xl p-2.5 soft"><div class="text-[11px] muted">{t('stat.files')}</div><div class="font-semibold mono">{num(app.summary.files)}</div></div>
-          <div class="rounded-xl p-2.5 soft"><div class="text-[11px] muted">{t('stat.folders')}</div><div class="font-semibold mono">{num(app.summary.dirs)}</div></div>
-          <div class="rounded-xl p-2.5 soft"><div class="text-[11px] muted">{t('stat.scanTime')}</div><div class="font-semibold mono">{(app.summary.elapsed_ms / 1000).toFixed(1)}s</div></div>
+          <div class="tile-stat" title={t('stat.files')}><div>{t('stat.files')}</div><div>{num(app.summary.files)}</div></div>
+          <div class="tile-stat" title={t('stat.folders')}><div>{t('stat.folders')}</div><div>{num(app.summary.dirs)}</div></div>
+          <div class="tile-stat" title={t('stat.scanTime')}><div>{t('stat.scanTime')}</div><div>{(app.summary.elapsed_ms / 1000).toFixed(1)}s</div></div>
         </div>
         {#if app.summary.errors > 0}
           <div class="text-[11px] muted mt-2">{t('stat.skipped', { n: num(app.summary.errors) })}</div>

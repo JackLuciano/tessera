@@ -11,6 +11,8 @@
         const m = localStorage.getItem('tessera-mode') || 'system';
         const light = m === 'light' || (m === 'system' && matchMedia('(prefers-color-scheme: light)').matches);
         document.documentElement.dataset.theme = light ? 'tessera-light' : 'tessera-dark';
+        // ?anim=0 is for screenshot captures of the dev preview
+        if (localStorage.getItem('tessera-anim') === 'false' || /[?&]anim=0/.test(location.search)) document.documentElement.classList.add('no-anim');
       } catch {}
     </script>
     %sveltekit.head%

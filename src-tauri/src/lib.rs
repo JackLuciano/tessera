@@ -1,8 +1,13 @@
+mod cache;
+mod delete;
 mod dupes;
 mod history;
 #[cfg(windows)]
 mod mft;
+#[cfg(windows)]
+mod optimizer;
 mod scanner;
+mod watch;
 
 use parking_lot::Mutex;
 use scanner::{Cat, Kind, Progress, Tree, CAT_COUNT, NO_PARENT};
@@ -13,11 +18,88 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-#[derive(Default)]
 struct AppState {
     tree: Mutex<Option<Tree>>,
     progress: Mutex<Option<Arc<Progress>>>,
     dup_progress: Mutex<Option<Arc<dupes::DupProgress>>>,
+    watch: Mutex<Option<watch::LiveWatch>>,
+    live: AtomicBool,
+    /// Bumped whenever the tree is replaced, so background work started on an older tree can tell.
+    generation: AtomicU64,
+    /// Kept between calls: CPU usage is measured as the difference between two refreshes.
+    sys: Mutex<sysinfo::System>,
+    delete_cancel: AtomicBool,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            tree: Mutex::default(),
+            progress: Mutex::default(),
+            dup_progress: Mutex::default(),
+            watch: Mutex::default(),
+            live: AtomicBool::new(true),
+            generation: AtomicU64::new(0),
+            sys: Mutex::new(sysinfo::System::new()),
+            delete_cancel: AtomicBool::new(false),
+        }
+    }
+}
+
+#[derive(Serialize, Clone)]
+struct LiveEvent {
+    folders: usize,
+    delta: i64,
+    size: u64,
+    files: u64,
+}
+
+/// Watch the scanned root and fold changes into the tree as they happen.
+fn start_watch(app: &AppHandle, state: &AppState) {
+    *state.watch.lock() = None;
+    if !state.live.load(Ordering::Relaxed) {
+        return;
+    }
+    let Some(root) = state.tree.lock().as_ref().map(|t| t.root_path.clone()) else { return };
+    let handle = app.clone();
+    let res = watch::start(&root, move |dirs| {
+        let st = handle.state::<AppState>();
+        let ev = {
+            let mut g = st.tree.lock();
+            let Some(t) = g.as_mut() else { return };
+            let mut ids: Vec<u32> = dirs.iter().map(|d| t.find_dir(d)).collect();
+            ids.sort_unstable();
+            ids.dedup();
+            let delta: i64 = ids.iter().map(|id| t.refresh_dir(*id)).sum();
+            LiveEvent { folders: ids.len(), delta, size: t.nodes[0].size, files: t.nodes[0].files }
+        };
+        let _ = handle.emit("live-change", ev);
+    });
+    match res {
+        Ok(w) => *state.watch.lock() = Some(w),
+        Err(e) => eprintln!("live watch unavailable for {}: {e}", root.display()),
+    }
+}
+
+/// Turn live change tracking on or off (Settings).
+#[tauri::command]
+fn set_live_watch(enabled: bool, app: AppHandle, state: State<'_, AppState>) {
+    state.live.store(enabled, Ordering::Relaxed);
+    if enabled {
+        if state.watch.lock().is_none() {
+            start_watch(&app, &state);
+        }
+    } else {
+        *state.watch.lock() = None;
+    }
+}
+
+/// Current totals, for views to refresh after live changes.
+#[tauri::command]
+fn get_summary(state: State<'_, AppState>) -> Result<ScanSummary, String> {
+    let g = state.tree.lock();
+    let t = g.as_ref().ok_or("no scan yet")?;
+    Ok(summary(t, "live"))
 }
 
 #[derive(Serialize)]
@@ -103,6 +185,8 @@ async fn scan(path: String, app: AppHandle, state: State<'_, AppState>) -> Resul
     if !root.exists() {
         return Err(format!("{path} does not exist"));
     }
+    // The old watcher would keep refreshing a tree that is about to be replaced
+    *state.watch.lock() = None;
     let progress = Progress::new();
     *state.progress.lock() = Some(progress.clone());
 
@@ -123,6 +207,10 @@ async fn scan(path: String, app: AppHandle, state: State<'_, AppState>) -> Resul
             }
         })
     };
+
+    // Journal position before reading anything, so the next start can catch up on changes from here on
+    let journal = journal_position(&root);
+    let started_at = cache::now();
 
     let p = progress.clone();
     let (tree, engine) = tauri::async_runtime::spawn_blocking(move || {
@@ -153,7 +241,118 @@ async fn scan(path: String, app: AppHandle, state: State<'_, AppState>) -> Resul
         eprintln!("could not save history snapshot: {e}");
     }
     *state.tree.lock() = Some(tree);
+    state.generation.fetch_add(1, Ordering::Relaxed);
+    start_watch(&app, &state);
+    save_cache(&app, cache::Meta { saved_at: started_at, journal });
     Ok(s)
+}
+
+/// (journal id, next USN) of the volume holding `root`; NTFS on Windows with admin rights only.
+fn journal_position(root: &std::path::Path) -> Option<(u64, i64)> {
+    #[cfg(windows)]
+    return cache::usn::position(root);
+    #[cfg(not(windows))]
+    {
+        let _ = root;
+        None
+    }
+}
+
+/// Folders changed since a journal position, or `None` when the journal can't answer that.
+fn journal_changes(root: &std::path::Path, journal: u64, from: i64) -> Option<Vec<PathBuf>> {
+    #[cfg(windows)]
+    return cache::usn::changed_dirs(root, journal, from);
+    #[cfg(not(windows))]
+    {
+        let _ = (root, journal, from);
+        None
+    }
+}
+
+/// Write the current tree to the scan cache in the background (copy under the lock, I/O without it).
+fn save_cache(app: &AppHandle, meta: cache::Meta) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let Ok(base) = app.path().app_data_dir() else { return };
+        let (root, raw) = {
+            let st = app.state::<AppState>();
+            let g = st.tree.lock();
+            let Some(t) = g.as_ref() else { return };
+            (t.root_path.to_string_lossy().into_owned(), cache::encode(t, &meta))
+        };
+        if let Err(e) = cache::write(&base, &root, &raw) {
+            eprintln!("could not save the scan cache: {e}");
+        }
+    });
+}
+
+#[derive(Serialize)]
+struct CachedSummary {
+    #[serde(flatten)]
+    summary: ScanSummary,
+    cached_at: u64,
+}
+
+/// Open the saved scan of `root` instantly, then catch up on changes in the background
+/// (`catchup-done` event). Returns `None` when there is no usable saved scan.
+#[tauri::command]
+async fn load_cached(root: String, app: AppHandle, state: State<'_, AppState>) -> Result<Option<CachedSummary>, String> {
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let r = root.clone();
+    let loaded = tauri::async_runtime::spawn_blocking(move || cache::load(&base, &r)).await.map_err(|e| e.to_string())?;
+    let Ok((tree, meta)) = loaded else { return Ok(None) };
+    if !tree.root_path.exists() {
+        return Ok(None);
+    }
+    let s = CachedSummary { summary: summary(&tree, "cache"), cached_at: meta.saved_at };
+    *state.tree.lock() = Some(tree);
+    let generation = state.generation.fetch_add(1, Ordering::Relaxed) + 1;
+
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let st = handle.state::<AppState>();
+        let root = PathBuf::from(&root);
+        let journal_now = journal_position(&root);
+        let started_at = cache::now();
+
+        // Prefer the USN journal (exact, cheap); otherwise stat every folder against the save time
+        let from_journal = meta.journal.and_then(|(id, usn)| journal_changes(&root, id, usn));
+        let ids: Vec<u32> = match from_journal {
+            Some(paths) => {
+                let g = st.tree.lock();
+                let Some(t) = g.as_ref() else { return };
+                paths.iter().filter(|p| p.starts_with(&t.root_path)).map(|p| t.find_dir(p)).collect()
+            }
+            None => {
+                let dirs = {
+                    let g = st.tree.lock();
+                    let Some(t) = g.as_ref() else { return };
+                    cache::dir_paths(t)
+                };
+                cache::changed_by_mtime(dirs, meta.saved_at)
+            }
+        };
+        let ev = {
+            let mut g = st.tree.lock();
+            let Some(t) = g.as_mut() else { return };
+            // A rescan replaced the tree meanwhile: these ids belong to the old one
+            if st.generation.load(Ordering::Relaxed) != generation {
+                return;
+            }
+            let mut ids = ids;
+            ids.sort_unstable();
+            ids.dedup();
+            let delta: i64 = ids.iter().map(|id| t.refresh_dir(*id)).sum();
+            LiveEvent { folders: ids.len(), delta, size: t.nodes[0].size, files: t.nodes[0].files }
+        };
+        let _ = handle.emit("catchup-done", &ev);
+        start_watch(&handle, &st);
+        // Save the caught-up tree so the next start has less to do
+        if ev.folders > 0 {
+            save_cache(&handle, cache::Meta { saved_at: started_at, journal: journal_now });
+        }
+    });
+    Ok(Some(s))
 }
 
 #[tauri::command]
@@ -226,6 +425,235 @@ async fn find_duplicates(app: AppHandle, state: State<'_, AppState>) -> Result<V
     res
 }
 
+/// Replace duplicate copies with hard links to the kept file: every path keeps working, the space
+/// is freed. `pairs` are (keep, duplicate) node ids. Needs both files on the same volume.
+#[tauri::command]
+async fn hardlink_dupes(pairs: Vec<(u32, u32)>, state: State<'_, AppState>) -> Result<DeleteResult, String> {
+    let jobs: Vec<(PathBuf, PathBuf, u64)> = {
+        let g = state.tree.lock();
+        let t = g.as_ref().ok_or("no scan yet")?;
+        pairs
+            .iter()
+            .filter(|(k, d)| (*k as usize) < t.nodes.len() && (*d as usize) < t.nodes.len() && k != d)
+            .map(|(k, d)| (t.path_of(*k), t.path_of(*d), t.nodes[*d as usize].size))
+            .collect()
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let (mut freed, mut deleted, mut failed) = (0, 0, Vec::new());
+        for (keep, dup, size) in jobs {
+            if is_protected(&dup) {
+                failed.push(format!("{}: protected system location", dup.display()));
+                continue;
+            }
+            match dupes::hardlink(&keep, &dup) {
+                Ok(()) => {
+                    freed += size;
+                    deleted += 1;
+                }
+                Err(e) => failed.push(format!("{}: {e}", dup.display())),
+            }
+        }
+        DeleteResult { freed, deleted, failed, cancelled: false }
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+// ---------- optimizer (Windows only; other platforms report `supported: false`) ----------
+
+#[derive(Serialize)]
+// Only filled on Windows; elsewhere the optimizer reports `supported: false` with an empty list
+#[cfg_attr(not(windows), allow(dead_code))]
+struct TweakState {
+    key: &'static str,
+    on: bool,
+    admin: bool,
+    reboot: bool,
+}
+
+#[derive(Serialize)]
+struct Memory {
+    total: u64,
+    used: u64,
+}
+
+#[derive(Serialize)]
+struct OptStatus {
+    supported: bool,
+    elevated: bool,
+    active: Option<String>,
+    #[cfg(windows)]
+    power_plans: Vec<optimizer::PowerPlan>,
+    #[cfg(not(windows))]
+    power_plans: Vec<()>,
+    tweaks: Vec<TweakState>,
+    has_backup: bool,
+    memory: Memory,
+    cpu: f32,
+}
+
+#[tauri::command]
+async fn opt_status(app: AppHandle, state: State<'_, AppState>) -> Result<OptStatus, String> {
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let (memory, cpu) = {
+        let mut sys = state.sys.lock();
+        sys.refresh_memory();
+        sys.refresh_cpu_usage();
+        (Memory { total: sys.total_memory(), used: sys.used_memory() }, sys.global_cpu_usage())
+    };
+    #[cfg(windows)]
+    {
+        let (plans, tweaks) = tauri::async_runtime::spawn_blocking(|| {
+            let tweaks = optimizer::TWEAKS
+                .iter()
+                .map(|t| TweakState { key: t.key, on: optimizer::tweak_on(t), admin: t.machine(), reboot: t.reboot })
+                .collect::<Vec<_>>();
+            (optimizer::power_plans(), tweaks)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        Ok(OptStatus {
+            supported: true,
+            elevated: mft::is_elevated(),
+            active: optimizer::active_profile(&base),
+            power_plans: plans,
+            tweaks,
+            has_backup: optimizer::has_backup(&base),
+            memory,
+            cpu,
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = base;
+        Ok(OptStatus { supported: false, elevated: false, active: None, power_plans: vec![], tweaks: vec![], has_backup: false, memory, cpu })
+    }
+}
+
+#[derive(Serialize)]
+struct SysStats {
+    memory: Memory,
+    cpu: f32,
+}
+
+/// CPU and memory only, cheap enough to poll every couple of seconds.
+#[tauri::command]
+fn sys_stats(state: State<'_, AppState>) -> SysStats {
+    let mut sys = state.sys.lock();
+    sys.refresh_memory();
+    sys.refresh_cpu_usage();
+    SysStats { memory: Memory { total: sys.total_memory(), used: sys.used_memory() }, cpu: sys.global_cpu_usage() }
+}
+
+#[cfg(windows)]
+type OptResult = Result<optimizer::Outcome, String>;
+#[cfg(not(windows))]
+type OptResult = Result<(), String>;
+
+#[tauri::command]
+async fn opt_apply_profile(profile: String, app: AppHandle) -> OptResult {
+    #[cfg(windows)]
+    {
+        let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        tauri::async_runtime::spawn_blocking(move || optimizer::apply_profile(&base, &profile, mft::is_elevated())).await.map_err(|e| e.to_string())?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (profile, app);
+        Err("the optimizer is only available on Windows".into())
+    }
+}
+
+#[tauri::command]
+async fn opt_set_tweak(key: String, on: bool, app: AppHandle) -> OptResult {
+    #[cfg(windows)]
+    {
+        let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        tauri::async_runtime::spawn_blocking(move || optimizer::set_tweak(&base, &key, on)).await.map_err(|e| e.to_string())?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (key, on, app);
+        Err("the optimizer is only available on Windows".into())
+    }
+}
+
+#[tauri::command]
+async fn opt_set_power_plan(guid: String) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        tauri::async_runtime::spawn_blocking(move || optimizer::set_power_plan(&guid)).await.map_err(|e| e.to_string())?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = guid;
+        Err("the optimizer is only available on Windows".into())
+    }
+}
+
+#[tauri::command]
+async fn opt_restore(app: AppHandle) -> OptResult {
+    #[cfg(windows)]
+    {
+        let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        tauri::async_runtime::spawn_blocking(move || optimizer::restore(&base)).await.map_err(|e| e.to_string())?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Err("the optimizer is only available on Windows".into())
+    }
+}
+
+#[tauri::command]
+#[cfg(windows)]
+fn opt_startup_list() -> Vec<optimizer::StartupApp> {
+    optimizer::startup_list()
+}
+#[tauri::command]
+#[cfg(not(windows))]
+fn opt_startup_list() -> Vec<()> {
+    Vec::new()
+}
+
+#[tauri::command]
+fn opt_startup_set(id: String, enabled: bool, app: AppHandle) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        optimizer::set_startup_tracked(&base, &id, enabled)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (id, enabled, app);
+        Err("the optimizer is only available on Windows".into())
+    }
+}
+
+#[tauri::command]
+#[cfg(windows)]
+async fn opt_processes(state: State<'_, AppState>) -> Result<Vec<optimizer::AppProcess>, String> {
+    Ok(optimizer::processes(&mut state.sys.lock()))
+}
+#[tauri::command]
+#[cfg(not(windows))]
+async fn opt_processes() -> Result<Vec<()>, String> {
+    Ok(Vec::new())
+}
+
+#[tauri::command]
+fn opt_kill(pids: Vec<u32>, state: State<'_, AppState>) -> OptResult {
+    #[cfg(windows)]
+    {
+        Ok(optimizer::kill(&mut state.sys.lock(), &pids))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (pids, state);
+        Err("the optimizer is only available on Windows".into())
+    }
+}
+
 #[tauri::command]
 fn cancel_duplicates(state: State<'_, AppState>) {
     if let Some(p) = state.dup_progress.lock().as_ref() {
@@ -269,14 +697,17 @@ struct NodeDto {
     children: Vec<NodeDto>,
 }
 
-fn dto(t: &Tree, id: u32, depth: u32, max_children: usize) -> NodeDto {
+/// `min_size` prunes grandchildren and deeper levels that would be too small to see in the treemap;
+/// direct children are always listed (up to `max_children`) for the side panel.
+fn dto(t: &Tree, id: u32, depth: u32, max_children: usize, min_size: u64, top: bool) -> NodeDto {
     let n = &t.nodes[id as usize];
+    let floor = if top { 1 } else { min_size.max(1) };
     let children = if depth > 0 {
         n.children
             .iter()
-            .filter(|c| t.nodes[**c as usize].size > 0)
+            .filter(|c| t.nodes[**c as usize].size >= floor)
             .take(max_children)
-            .map(|c| dto(t, *c, depth - 1, max_children))
+            .map(|c| dto(t, *c, depth - 1, max_children, min_size, false))
             .collect()
     } else {
         Vec::new()
@@ -298,13 +729,18 @@ fn dto(t: &Tree, id: u32, depth: u32, max_children: usize) -> NodeDto {
 
 /// A node with `depth` levels of children (largest first, capped per level).
 #[tauri::command]
-fn get_node(id: u32, depth: u32, max_children: usize, state: State<'_, AppState>) -> Result<NodeDto, String> {
+fn get_node(id: u32, depth: u32, max_children: usize, min_frac: Option<f64>, state: State<'_, AppState>) -> Result<NodeDto, String> {
     let g = state.tree.lock();
     let t = g.as_ref().ok_or("no scan yet")?;
     if id as usize >= t.nodes.len() {
         return Err("unknown node".into());
     }
-    Ok(dto(t, id, depth.min(3), max_children.clamp(1, 400)))
+    // Without a size floor deep requests could serialize the whole drive, so cap depth harder then
+    let (max_depth, min_size) = match min_frac {
+        Some(f) if f > 0.0 => (6, (t.nodes[id as usize].size as f64 * f.min(1.0)) as u64),
+        _ => (3, 0),
+    };
+    Ok(dto(t, id, depth.min(max_depth), max_children.clamp(1, 400), min_size, true))
 }
 
 /// Ancestor chain (root first) for breadcrumbs.
@@ -418,51 +854,115 @@ struct DeleteResult {
     freed: u64,
     deleted: usize,
     failed: Vec<String>,
+    cancelled: bool,
 }
 
 /// Delete nodes by id. `permanent` skips the Recycle Bin / Trash.
 #[tauri::command]
-async fn delete_nodes(ids: Vec<u32>, permanent: bool, state: State<'_, AppState>) -> Result<DeleteResult, String> {
-    let targets: Vec<(u32, PathBuf, Kind, u64)> = {
+async fn delete_nodes(ids: Vec<u32>, permanent: bool, app: AppHandle, state: State<'_, AppState>) -> Result<DeleteResult, String> {
+    let (targets, generation): (Vec<(u32, PathBuf, Kind, u64)>, u64) = {
         let g = state.tree.lock();
         let t = g.as_ref().ok_or("no scan yet")?;
-        ids.iter()
+        let targets = ids
+            .iter()
             .filter(|id| (**id as usize) < t.nodes.len() && **id != 0)
             .map(|id| { let n = &t.nodes[*id as usize]; (*id, t.path_of(*id), n.kind, n.size) })
-            .collect()
+            .collect();
+        (targets, state.generation.load(Ordering::Relaxed))
     };
-    let mut ok = Vec::new();
-    let mut failed = Vec::new();
-    for (id, path, kind, _) in &targets {
-        if *kind == Kind::Bucket {
-            failed.push(format!("{}: small-file groups can't be deleted as one item", path.display()));
-            continue;
+    state.delete_cancel.store(false, Ordering::Relaxed);
+
+    // Deleting thousands of folders takes a while: run off the async runtime and report progress
+    let handle = app.clone();
+    let (ok, failed, freed, cancelled) = tauri::async_runtime::spawn_blocking(move || {
+        let st = handle.state::<AppState>();
+        let mut failed = Vec::new();
+        let mut items: Vec<(u32, PathBuf, bool, u64)> = Vec::new();
+        for (id, path, kind, size) in targets {
+            if kind == Kind::Bucket {
+                failed.push(format!("{}: small-file groups can't be deleted as one item", path.display()));
+            } else if is_protected(&path) {
+                failed.push(format!("{}: protected system location", path.display()));
+            } else {
+                items.push((id, path, kind == Kind::Dir, size));
+            }
         }
-        if is_protected(path) {
-            failed.push(format!("{}: protected system location", path.display()));
-            continue;
-        }
-        let res = if permanent {
-            if *kind == Kind::Dir { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) }.map_err(|e| e.to_string())
-        } else {
-            trash::delete(path).map_err(|e| e.to_string())
+        let total = items.len();
+        let total_bytes: u64 = items.iter().map(|i| i.3).sum();
+        let progress = Arc::new(delete::Progress::new());
+
+        // ~8 updates a second, plus the cancel flag mirrored into the deleter
+        let finished = Arc::new(AtomicBool::new(false));
+        let ticker = {
+            let (p, fin, h) = (progress.clone(), finished.clone(), handle.clone());
+            std::thread::spawn(move || {
+                while !fin.load(Ordering::Relaxed) {
+                    let st = h.state::<AppState>();
+                    if st.delete_cancel.load(Ordering::Relaxed) {
+                        p.cancel.store(true, Ordering::Relaxed);
+                    }
+                    let _ = h.emit("delete-progress", DeleteProgress {
+                        done: p.done.load(Ordering::Relaxed),
+                        total,
+                        bytes: p.bytes.load(Ordering::Relaxed).min(total_bytes),
+                        total_bytes,
+                    });
+                    std::thread::sleep(Duration::from_millis(120));
+                }
+            })
         };
-        match res {
-            Ok(()) => ok.push(*id),
-            Err(e) => failed.push(format!("{}: {e}", path.display())),
+
+        let jobs: Vec<(PathBuf, bool, u64)> = items.iter().map(|i| (i.1.clone(), i.2, i.3)).collect();
+        let outcome = if permanent { delete::permanent_all(&jobs, &progress) } else { delete::trash_all(&jobs, &progress) };
+        finished.store(true, Ordering::Relaxed);
+        let _ = ticker.join();
+
+        let mut ok = Vec::new();
+        let mut freed = 0u64;
+        let mut cancelled = false;
+        for ((id, path, _, size), r) in items.iter().zip(outcome) {
+            match r {
+                Ok(()) => {
+                    ok.push(*id);
+                    freed += size;
+                }
+                Err(e) if e == "cancelled" || e.contains("cancelled") => cancelled = true,
+                Err(e) => failed.push(format!("{}: {e}", path.display())),
+            }
         }
-    }
-    let mut freed = 0;
+        let _ = handle.emit("delete-progress", DeleteProgress { done: total, total, bytes: freed, total_bytes });
+        cancelled |= st.delete_cancel.load(Ordering::Relaxed);
+        (ok, failed, freed, cancelled)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
     {
         let mut g = state.tree.lock();
-        if let Some(t) = g.as_mut() {
+        // Ids belong to the tree the delete started on; a rescan meanwhile makes them meaningless
+        if let Some(t) = g.as_mut()
+            && state.generation.load(Ordering::Relaxed) == generation
+        {
             for id in &ok {
-                freed += t.nodes[*id as usize].size;
                 t.remove(*id);
             }
         }
     }
-    Ok(DeleteResult { freed, deleted: ok.len(), failed })
+    Ok(DeleteResult { freed, deleted: ok.len(), failed, cancelled })
+}
+
+#[derive(Serialize, Clone)]
+struct DeleteProgress {
+    done: usize,
+    total: usize,
+    bytes: u64,
+    total_bytes: u64,
+}
+
+/// Stop a running delete after the item in progress.
+#[tauri::command]
+fn cancel_delete(state: State<'_, AppState>) {
+    state.delete_cancel.store(true, Ordering::Relaxed);
 }
 
 fn is_protected(p: &std::path::Path) -> bool {
@@ -503,8 +1003,11 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
-            list_drives, scan, cancel_scan, get_node, get_ancestors, largest_files, find_junk, delete_nodes, reveal,
-            is_elevated, relaunch_as_admin, find_duplicates, cancel_duplicates, history_list, history_diff
+            list_drives, scan, cancel_scan, get_node, get_ancestors, largest_files, find_junk, delete_nodes, cancel_delete, reveal,
+            is_elevated, relaunch_as_admin, find_duplicates, cancel_duplicates, hardlink_dupes, history_list, history_diff,
+            set_live_watch, get_summary, load_cached,
+            opt_status, opt_apply_profile, opt_set_tweak, opt_set_power_plan, opt_restore, opt_startup_list, opt_startup_set,
+            opt_processes, opt_kill, sys_stats
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

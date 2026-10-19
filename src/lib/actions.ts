@@ -1,10 +1,10 @@
-import { api } from './api';
+import { api, nodeName, type Kind } from './api';
 import { app } from './store.svelte';
 import { menu } from './menu.svelte';
 import { confirmDelete } from './confirm.svelte';
 import { t } from './i18n.svelte';
 
-interface Target { id: number; name: string; path: string; size: number; kind: string }
+interface Target { id: number; name: string; path: string; size: number; kind: Kind; files?: number }
 
 export async function copyPath(p: string) {
   try { await navigator.clipboard.writeText(p); app.toast(t('toast.pathCopied'), 'success'); } catch { app.toast(p, 'info'); }
@@ -22,7 +22,7 @@ export function nodeMenu(ev: MouseEvent, n: Target, open?: () => void, onDeleted
     '-',
     {
       label: app.permanentDelete ? t('action.deletePerm') : t('action.recycle'), ico: 'trash', danger: true, disabled: bucket,
-      run: (e: MouseEvent) => confirmDelete.ask([{ id: n.id, name: n.name, size: n.size }], e, () => onDeleted?.()),
+      run: (e: MouseEvent) => confirmDelete.ask([{ id: n.id, name: nodeName(n), size: n.size }], e, () => onDeleted?.()),
     },
   ]);
 }

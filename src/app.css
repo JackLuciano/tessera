@@ -144,10 +144,13 @@ body { background: var(--color-base-200); color: var(--color-base-content); min-
 .reveal { opacity: 0; transform: translateY(14px) scale(.985); animation: reveal .6s cubic-bezier(.2,.8,.2,1) forwards; animation-delay: calc(var(--i, 0) * 60ms); }
 @keyframes reveal { to { opacity: 1; transform: none; } }
 
-.nav-item { display: flex; align-items: center; gap: .75rem; padding: .6rem .8rem; border-radius: .7rem; color: var(--muted); font-weight: 500; font-size: .92rem; cursor: pointer; transition: background .2s, color .2s; position: relative; white-space: nowrap; }
-.nav-item:hover { background: color-mix(in oklch, var(--color-base-content) 6%, transparent); color: var(--color-base-content); }
+/* Long translations (e.g. "Legnagyobb fájlok") must truncate inside the item, never push past the sidebar */
+.nav-item { display: flex; align-items: center; gap: .75rem; width: 100%; min-width: 0; padding: .6rem .8rem; border-radius: .7rem; color: var(--muted); font-weight: 500; font-size: .92rem; cursor: pointer; transition: background .2s, color .2s, transform .2s cubic-bezier(.2,.8,.2,1); position: relative; white-space: nowrap; text-align: left; }
+.nav-item > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.nav-item:hover { background: color-mix(in oklch, var(--color-base-content) 6%, transparent); color: var(--color-base-content); transform: translateX(2px); }
 .nav-item.active { background: color-mix(in oklch, var(--color-primary) 16%, transparent); color: var(--color-primary); }
-.nav-item.active::before { content: ""; position: absolute; left: -.85rem; top: 25%; bottom: 25%; width: 3px; border-radius: 3px; background: var(--color-primary); }
+.nav-item.active::before { content: ""; position: absolute; left: -.6rem; top: 25%; bottom: 25%; width: 3px; border-radius: 3px; background: var(--color-primary); animation: nav-bar .35s cubic-bezier(.2,1.2,.3,1); }
+@keyframes nav-bar { from { transform: scaleY(0); } }
 .nav-badge { margin-left: auto; padding: .05rem .45rem; border-radius: 999px; font-size: .7rem; font-weight: 600; white-space: nowrap; color: var(--color-primary); background: color-mix(in oklch, var(--color-primary) 16%, transparent); border: 1px solid color-mix(in oklch, var(--color-primary) 30%, transparent); }
 .nav-item.active .nav-badge { color: oklch(18% 0.04 285); background: var(--color-primary); border-color: transparent; }
 
@@ -178,6 +181,88 @@ body { background: var(--color-base-200); color: var(--color-base-content); min-
 .danger-banner { border: 1px solid color-mix(in oklch, var(--color-error) 40%, transparent); background: color-mix(in oklch, var(--color-error) 10%, transparent); }
 
 ::view-transition-old(root), ::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
-}
+
+/* Motion is an app setting (Settings › Animations), not tied to the OS "reduce motion" flag,
+   which Windows turns on together with "Animation effects: off" and would freeze every spinner. */
+/* Off means off: no animation at all, so everything is shown in its final state immediately */
+html.no-anim *, html.no-anim *::before, html.no-anim *::after { animation: none !important; transition: none !important; }
+html.no-anim .reveal { opacity: 1; transform: none; }
+/* Progress indicators keep moving even with animations off: a frozen spinner looks like a hang */
+html.no-anim .scan-orb::before { animation: spin 1.1s linear infinite !important; }
+
+/* View switch: content slides up and fades in */
+.view-enter { animation: view-in .45s cubic-bezier(.2,.8,.2,1) both; }
+@keyframes view-in { from { opacity: 0; transform: translateY(10px); filter: blur(4px); } }
+
+/* Staggered list rows */
+.stagger > * { animation: row-in .4s cubic-bezier(.2,.8,.2,1) both; }
+.stagger > *:nth-child(1) { animation-delay: 0ms } .stagger > *:nth-child(2) { animation-delay: 25ms }
+.stagger > *:nth-child(3) { animation-delay: 50ms } .stagger > *:nth-child(4) { animation-delay: 75ms }
+.stagger > *:nth-child(5) { animation-delay: 100ms } .stagger > *:nth-child(6) { animation-delay: 125ms }
+.stagger > *:nth-child(7) { animation-delay: 150ms } .stagger > *:nth-child(8) { animation-delay: 175ms }
+.stagger > *:nth-child(9) { animation-delay: 200ms } .stagger > *:nth-child(n+10) { animation-delay: 225ms }
+@keyframes row-in { from { opacity: 0; transform: translateX(-8px); } }
+
+/* Buttons give a little under the cursor */
+.btn { transition: transform .15s cubic-bezier(.2,.8,.2,1), background-color .2s, color .2s, box-shadow .2s; }
+.btn:active:not(:disabled) { transform: scale(.96); }
+
+/* Modals pop in */
+.modal[open] .modal-box { animation: pop .32s cubic-bezier(.2,1.2,.3,1) both; }
+@keyframes pop { from { opacity: 0; transform: translateY(12px) scale(.94); } }
+
+/* Toasts slide in from the right */
+.toast > * { animation: toast-in .4s cubic-bezier(.2,1.1,.3,1) both; }
+@keyframes toast-in { from { opacity: 0; transform: translateX(40px) scale(.96); } }
+
+/* Scan orb: a glowing dot rides the leading tip of the arc (same rotation as ::before, whose
+   gradient ends at 0deg; the ring is the outer ~9px, see the mask above) */
+.scan-orb .dot { position: absolute; inset: 0; animation: spin 1.1s linear infinite; }
+.scan-orb .dot::after { content: ""; position: absolute; top: 0; left: 50%; width: 9px; height: 9px; margin-left: -4.5px; border-radius: 50%; background: var(--color-accent); box-shadow: 0 0 14px 2px var(--color-accent); }
+html.no-anim .scan-orb .dot { animation: spin 1.1s linear infinite !important; }
+
+/* Small stat tile: label ellipsizes, value shrinks with the tile so long numbers never overflow */
+.tile-stat { container-type: inline-size; min-width: 0; border-radius: .75rem; padding: .55rem .65rem; background: var(--soft); }
+.tile-stat > :first-child { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile-stat > :last-child { font-family: "Cascadia Mono", "Geist Mono", ui-monospace, Consolas, monospace; font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; font-size: min(1rem, 15.5cqi); line-height: 1.5; }
+
+/* Indeterminate bar for when the total can't be known in advance */
+.progress-flow { position: relative; height: .5rem; border-radius: 999px; overflow: hidden; background: color-mix(in oklch, var(--color-primary) 18%, transparent); }
+.progress-flow > i { position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: linear-gradient(90deg, var(--color-primary), var(--color-accent)); transition: width .4s cubic-bezier(.2,.8,.2,1); }
+.progress-flow > i::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,.45), transparent); transform: translateX(-100%); animation: flow 1.4s ease-in-out infinite; }
+.progress-flow.indeterminate > i { width: 35% !important; animation: slide 1.3s ease-in-out infinite; }
+@keyframes flow { to { transform: translateX(100%); } }
+@keyframes slide { from { left: -35%; } to { left: 100%; } }
+html.no-anim .progress-flow.indeterminate > i { animation: slide 1.3s ease-in-out infinite !important; }
+html.no-anim .progress-flow > i { transition: width .4s cubic-bezier(.2,.8,.2,1) !important; }
+
+.share-bar { position: absolute; left: 0; top: 0; bottom: 0; opacity: .1; border-radius: .6rem; pointer-events: none; transform-origin: left; animation: share-grow .7s cubic-bezier(.2,.8,.2,1) both; }
+@keyframes share-grow { from { transform: scaleX(0); } }
+.row-hover > :not(.share-bar) { position: relative; }
+
+/* "Live" indicator: a breathing dot with an expanding ring */
+.live-pill { display: inline-flex; align-items: center; gap: .4rem; padding: .15rem .55rem; border-radius: 999px; font-size: .72rem; font-weight: 600; color: var(--color-success); background: color-mix(in oklch, var(--color-success) 12%, transparent); }
+.live-pill i { position: relative; width: 7px; height: 7px; border-radius: 50%; background: var(--color-success); }
+.live-pill i::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--color-success); animation: ping 1.8s cubic-bezier(0,0,.2,1) infinite; }
+@keyframes ping { 75%, 100% { transform: scale(2.6); opacity: 0; } }
+
+.diverge { position: relative; height: 8px; border-radius: 6px; background: color-mix(in oklch, var(--color-base-content) 6%, transparent); }
+.diverge::before { content: ""; position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px; background: color-mix(in oklch, var(--color-base-content) 25%, transparent); }
+.diverge > i { position: absolute; top: 0; bottom: 0; border-radius: 6px; animation: share-grow .7s cubic-bezier(.2,.8,.2,1) both; }
+.diverge > i.up { left: 50%; background: var(--color-warning); transform-origin: left; }
+.diverge > i.down { right: 50%; background: var(--color-success); transform-origin: right; }
+
+.chip-soft { display: inline-flex; align-items: center; gap: .35rem; padding: .15rem .55rem; border-radius: 999px; font-size: .72rem; font-weight: 600; color: var(--muted); background: var(--soft); white-space: nowrap; }
+
+/* Optimizer profile cards: gradient icon, gradient ring when active */
+.profile-card { position: relative; display: flex; flex-direction: column; padding: 1rem; border-radius: 1rem; background: var(--soft); border: 1px solid var(--glass-border); transition: transform .3s cubic-bezier(.2,.8,.2,1), box-shadow .3s; }
+.profile-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+.profile-card.active { border-color: transparent; background: linear-gradient(var(--glass-solid), var(--glass-solid)) padding-box, var(--grad) border-box; border: 1.5px solid transparent; box-shadow: 0 10px 34px -14px color-mix(in oklch, var(--color-primary) 70%, transparent); }
+.profile-ico { width: 2.6rem; height: 2.6rem; border-radius: .8rem; display: grid; place-items: center; color: #fff; background: var(--grad); box-shadow: 0 6px 18px -8px color-mix(in oklch, var(--color-primary) 80%, transparent); flex: none; }
+.tag { display: inline-flex; align-items: center; gap: .25rem; padding: .1rem .45rem; border-radius: 999px; font-size: .68rem; font-weight: 600; color: var(--muted); background: color-mix(in oklch, var(--color-base-content) 7%, transparent); white-space: nowrap; }
+.tag-warn { color: var(--color-warning); background: color-mix(in oklch, var(--color-warning) 14%, transparent); }
+
+/* Hover glow on cards */
+.glow-hover, .card-lift { position: relative; }
+.glow-hover::after, .card-lift::after { content: ""; position: absolute; inset: -1px; border-radius: inherit; pointer-events: none; opacity: 0; transition: opacity .3s; box-shadow: 0 0 0 1px color-mix(in oklch, var(--color-primary) 35%, transparent), 0 8px 30px -10px color-mix(in oklch, var(--color-primary) 45%, transparent); }
+.glow-hover:hover::after, .card-lift:hover::after { opacity: 1; }

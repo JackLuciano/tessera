@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { app, type View } from './store.svelte';
+  import { untrack } from 'svelte';
+  import { app, IS_WINDOWS, type View } from './store.svelte';
   import { api, fmt, type FileEntry } from './api';
   import { t } from './i18n.svelte';
   import { updater } from './update.svelte';
@@ -14,7 +15,7 @@
   let sel = $state(0);
   let files = $state<FileEntry[]>([]);
 
-  const views: [View, string][] = [['overview', 'overview'], ['explorer', 'explorer'], ['cleanup', 'cleanup'], ['files', 'files'], ['dupes', 'copy'], ['history', 'history'], ['settings', 'settings']];
+  const views: [View, string][] = [['overview', 'overview'], ['explorer', 'explorer'], ['cleanup', 'cleanup'], ['files', 'files'], ['dupes', 'copy'], ['history', 'history'], ...(IS_WINDOWS ? [['optimizer', 'gauge'] as [View, string]] : []), ['settings', 'settings']];
 
   let commands = $derived<Cmd[]>([
     ...views.map(([v, ico]) => ({ label: t('palette.goto', { view: t('nav.' + v) }), ico, run: () => (app.view = v) })),
@@ -31,7 +32,7 @@
       q = ''; sel = 0;
       dlg.showModal();
       setTimeout(() => input?.focus(), 20);
-      if (app.summary) api.largestFiles(40).then(f => (files = f)).catch(() => {});
+      if (untrack(() => app.summary)) api.largestFiles(40).then(f => (files = f)).catch(() => {});
     } else if (!app.paletteOpen && dlg.open) dlg.close();
   });
 

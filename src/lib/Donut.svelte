@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { fmt, type Cat } from './api';
   import { t } from './i18n.svelte';
 
@@ -8,17 +9,19 @@
 
   let total = $derived(cats.reduce((s, c) => s + c.size, 0) || 1);
 
-  // Animate the sweep in on mount / data change
-  $effect(() => {
-    void cats;
-    grow = 0;
+  // Sweep in once when the chart appears. Data updates afterwards (rescans, live changes) just
+  // redraw: reading `cats` here would re-run this on every live tick and restart the animation.
+  onMount(() => {
+    if (document.documentElement.classList.contains('no-anim')) { grow = 1; return; }
     const t0 = performance.now();
+    let frame = 0;
     const step = (now: number) => {
       const p = Math.min(1, (now - t0) / 1200);
       grow = 1 - (1 - p) ** 3;
-      if (p < 1) requestAnimationFrame(step);
+      if (p < 1) frame = requestAnimationFrame(step);
     };
-    requestAnimationFrame(step);
+    frame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame);
   });
 
   function arc(r0: number, r1: number, a0: number, a1: number) {

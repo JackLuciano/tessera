@@ -235,17 +235,28 @@ pub fn scan(root: &Path, progress: &Progress) -> Res<Tree> {
             }
             let n = remaining.min(CHUNK as u64) as usize;
             vol.read_exact(&mut buf[..n]).map_err(|e| format!("read MFT: {e}"))?;
+            let (mut files, mut dirs, mut bytes) = (0u64, 0u64, 0u64);
             for rec in buf[..n].chunks_exact_mut(rec_size) {
                 if idx >= count {
-                    break 'runs;
+                    break;
                 }
                 if fixup(rec) {
                     parse_record(rec, idx, &mut recs, &mut ext_size);
+                    let r = &recs[idx];
+                    if r.used {
+                        if r.is_dir { dirs += 1 } else { files += 1; bytes += r.size }
+                    }
                 }
                 idx += 1;
             }
             remaining -= n as u64;
-            progress.files.store(idx as u64, Ordering::Relaxed);
+            // Live counters for the scan dialog: real files, folders and bytes, not raw MFT records
+            progress.files.fetch_add(files, Ordering::Relaxed);
+            progress.dirs.fetch_add(dirs, Ordering::Relaxed);
+            progress.bytes.fetch_add(bytes, Ordering::Relaxed);
+            if idx >= count {
+                break 'runs;
+            }
         }
     }
     for (r, extra) in recs.iter_mut().zip(&ext_size) {
@@ -322,10 +333,11 @@ fn build_tree(root: &Path, recs: Vec<Rec>, progress: &Progress, started: std::ti
             nodes.push(bucket);
             nodes[node_id as usize].children.push(id);
         }
-        progress.dirs.fetch_add(1, Ordering::Relaxed);
     }
+    // Final, reachable-only totals (orphaned records are excluded)
     progress.bytes.store(bytes, Ordering::Relaxed);
     progress.files.store(files, Ordering::Relaxed);
+    progress.dirs.store(nodes.iter().filter(|n| n.kind == Kind::Dir).count() as u64, Ordering::Relaxed);
 
     // Roll sizes up: children always have higher indices than their parent
     for i in (1..nodes.len()).rev() {

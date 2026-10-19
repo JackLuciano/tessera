@@ -88,7 +88,50 @@ type Key = (u64, [u8; 32]);
 /// (node id, path, modified)
 type Cand = (u32, PathBuf, u64);
 
+/// Drop paths that are hard links to a file already in the list: they share storage, so they are
+/// not wasted space (and after "replace with hard links" they must not show up again).
+fn drop_hardlinks(cands: Vec<(u32, PathBuf, u64, u64)>) -> Vec<(u32, PathBuf, u64, u64)> {
+    let mut by_size: HashMap<u64, Vec<(u32, PathBuf, u64, u64)>> = HashMap::new();
+    for c in cands {
+        by_size.entry(c.2).or_default().push(c);
+    }
+    by_size
+        .into_par_iter()
+        .flat_map_iter(|(_, group)| {
+            let mut seen: Vec<same_file::Handle> = Vec::new();
+            let mut out = Vec::new();
+            for c in group {
+                match same_file::Handle::from_path(&c.1) {
+                    Ok(h) if seen.contains(&h) => continue,
+                    Ok(h) => seen.push(h),
+                    Err(_) => {}
+                }
+                out.push(c);
+            }
+            out
+        })
+        .collect()
+}
+
+/// Replace `dup` with a hard link to `keep`. The link is created next to `dup` first and then renamed
+/// over it, so `dup` is never missing if anything fails half-way.
+pub fn hardlink(keep: &Path, dup: &Path) -> std::io::Result<()> {
+    if same_file::is_same_file(keep, dup)? {
+        return Ok(());
+    }
+    if std::fs::metadata(keep)?.len() != std::fs::metadata(dup)?.len() {
+        return Err(std::io::Error::other("files differ in size"));
+    }
+    let name = dup.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = dup.with_file_name(format!(".{name}.tessera-link"));
+    std::fs::hard_link(keep, &tmp)?;
+    std::fs::rename(&tmp, dup).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+
 pub fn find(cands: Vec<(u32, PathBuf, u64, u64)>, progress: &DupProgress) -> Vec<DupGroup> {
+    let cands = drop_hardlinks(cands);
     // Stage 2: partial hash within each size group
     let partial: Vec<(Key, Cand)> = cands
         .into_par_iter()
@@ -127,4 +170,30 @@ pub fn find(cands: Vec<(u32, PathBuf, u64, u64)>, progress: &DupProgress) -> Vec
         .collect();
     out.sort_by_key(|g| std::cmp::Reverse(g.wasted));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hardlinks_replace_copies_and_are_not_duplicates() {
+        let dir = std::env::temp_dir().join(format!("tessera-dupes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let data = vec![7u8; (MIN_SIZE + 3) as usize];
+        let (a, b) = (dir.join("a.bin"), dir.join("b.bin"));
+        std::fs::write(&a, &data).unwrap();
+        std::fs::write(&b, &data).unwrap();
+        let size = data.len() as u64;
+        let progress = DupProgress { hashed_bytes: AtomicU64::new(0), total_bytes: AtomicU64::new(0), cancel: AtomicBool::new(false) };
+        let cands = || vec![(1, a.clone(), size, 0), (2, b.clone(), size, 0)];
+        assert_eq!(find(cands(), &progress).len(), 1);
+
+        hardlink(&a, &b).unwrap();
+        assert!(same_file::is_same_file(&a, &b).unwrap());
+        assert_eq!(std::fs::read(&b).unwrap(), data);
+        assert!(find(cands(), &progress).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

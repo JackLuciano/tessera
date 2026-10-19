@@ -48,6 +48,25 @@
   function removeAll(ev: MouseEvent) {
     confirmDelete.ask(toRemove, ev, () => { groups = null; });
   }
+
+  let linkDlg: HTMLDialogElement;
+  let linking = $state(false);
+  /** Replace every non-kept copy with a hard link to the kept one: paths stay, space is freed. */
+  async function linkAll() {
+    if (!groups) return;
+    linking = true;
+    const pairs = groups.flatMap((g, gi) => g.files.filter((_, i) => i !== keep[gi]).map(f => [g.files[keep[gi]].id, f.id] as [number, number]));
+    try {
+      const res = await api.hardlinkDupes(pairs);
+      linkDlg.close();
+      app.toast(t('dupes.linked', { n: res.deleted, size: fmt(res.freed) }), 'success');
+      if (res.failed.length) app.toast(t('dupes.linkFailed', { n: res.failed.length, first: res.failed[0] }), 'warning');
+      await app.refreshDrives();
+      run();
+    } catch (e) {
+      app.toast(String(e), 'error');
+    } finally { linking = false; }
+  }
 </script>
 
 {#if !app.summary}
@@ -84,6 +103,7 @@
             <option value="newest">{t('dupes.keepNewest')}</option><option value="oldest">{t('dupes.keepOldest')}</option><option value="shortest">{t('dupes.keepShortest')}</option>
           </select>
           <button class="btn btn-ghost btn-xs" onclick={run}><Icon name="refresh" size=".9rem" /></button>
+          <button class="btn btn-xs btn-soft btn-secondary" disabled={!toRemove.length} title={t('dupes.linkHint')} onclick={() => linkDlg.showModal()}><Icon name="copy" size=".85rem" />{t('dupes.link')}</button>
           <button class="btn btn-xs shine {app.permanentDelete ? 'btn-error' : 'btn-primary'}" disabled={!toRemove.length} onclick={removeAll}>{t('dupes.remove', { size: fmt(wasted) })}</button>
         </div>
       </div>
@@ -113,3 +133,19 @@
     {/if}
   </section>
 {/if}
+
+<dialog bind:this={linkDlg} class="modal">
+  <div class="modal-box glass max-w-md">
+    <div class="flex items-center gap-3">
+      <span class="w-10 h-10 rounded-xl grid place-items-center" style="background:color-mix(in oklch,var(--color-secondary) 16%,transparent);color:var(--color-secondary)"><Icon name="copy" /></span>
+      <h3 class="text-lg font-semibold">{t('dupes.linkTitle', { n: toRemove.length })}</h3>
+    </div>
+    <p class="text-sm muted mt-3">{t('dupes.linkText', { size: fmt(wasted) })}</p>
+    <p class="text-xs muted mt-2">{t('dupes.linkWarn')}</p>
+    <div class="modal-action">
+      <button class="btn btn-ghost" onclick={() => linkDlg.close()}>{t('common.cancel')}</button>
+      <button class="btn btn-secondary" disabled={linking} onclick={linkAll}>{#if linking}<span class="loading loading-spinner loading-sm"></span>{/if}{t('dupes.link')}</button>
+    </div>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
