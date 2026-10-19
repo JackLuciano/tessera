@@ -7,7 +7,8 @@
 **See what's eating your disk — fast, beautiful, cross-platform.**
 
 A lightweight disk space analyzer for Windows, macOS and Linux with a parallel Rust scanner,
-a zoomable treemap and smart cleanup that knows what's safe to delete.
+a zoomable treemap and smart cleanup that knows what's safe to delete — plus a one-click
+Windows optimizer with gaming, work and battery profiles.
 
 [![Release](https://img.shields.io/github/v/release/JackLuciano/tessera?include_prereleases&style=flat-square&color=7c5cff)](../../releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/JackLuciano/tessera/ci.yml?style=flat-square&label=CI)](../../actions/workflows/ci.yml)
@@ -29,6 +30,8 @@ a zoomable treemap and smart cleanup that knows what's safe to delete.
 | ⚡ **Fast parallel scanner** | Without admin rights (or on other file systems) Rust + rayon walk every folder on all CPU cores. Junctions and symlinks are skipped so nothing is counted twice. |
 | 👯 **Duplicate finder** | Size → quick head/tail hash → full **BLAKE3** confirmation. Keep newest, oldest or shortest path and remove the rest — or **replace them with hard links** so every path keeps working while the data is stored once. |
 | 🔴 **Live changes** | After a scan Tessera watches the drive (ReadDirectoryChangesW / FSEvents / inotify) and re-reads only the folders that changed, so the numbers stay current without a rescan. |
+| 💾 **Instant start** | Every scan is saved (compressed). Next launch opens it immediately and catches up on what changed while Tessera was closed — from the NTFS USN journal when running as admin, otherwise by checking folder timestamps. |
+| 🎮 **Windows optimizer** | One-click **Gaming**, **Work & focus**, **Balanced** and **Battery saver** profiles: power plan, Game Mode, Game DVR, mouse acceleration, GPU scheduling, game priority, notifications, Start-menu ads and more. Startup-app manager and "close background apps before a game". Your original settings are backed up first and restored with one click; Defender, VBS, Windows Update and services are never touched. |
 | 📈 **History & diffs** | Every scan saves a small snapshot. Chart usage over time and see exactly which folders grew or shrank. |
 | ⌨️ **Command palette** | <kbd>Ctrl</kbd>+<kbd>K</kbd> to jump anywhere, rescan, switch drives or open a big file. |
 | 🔄 **Auto-update** | Signed updates from GitHub Releases, downloaded in the background and installed when you restart. |
@@ -46,23 +49,32 @@ a zoomable treemap and smart cleanup that knows what's safe to delete.
 <table>
   <tr>
     <td><img src="docs/screenshots/explorer.png" alt="Treemap explorer" /></td>
-    <td><img src="docs/screenshots/cleanup.png" alt="Smart cleanup" /></td>
+    <td><img src="docs/screenshots/optimizer.png" alt="Windows optimizer" /></td>
   </tr>
   <tr>
-    <td align="center"><b>Explorer</b> — zoomable treemap</td>
+    <td align="center"><b>Explorer</b> — nested, zoomable treemap</td>
+    <td align="center"><b>Optimizer</b> — gaming, work and battery profiles</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/cleanup.png" alt="Smart cleanup" /></td>
+    <td><img src="docs/screenshots/history.png" alt="History" /></td>
+  </tr>
+  <tr>
     <td align="center"><b>Smart cleanup</b> — reclaim space safely</td>
+    <td align="center"><b>History</b> — usage over time and what changed</td>
   </tr>
   <tr>
     <td><img src="docs/screenshots/files.png" alt="Largest files" /></td>
-    <td><img src="docs/screenshots/settings.png" alt="Settings" /></td>
+    <td><img src="docs/screenshots/overview-light.png" alt="Light theme" /></td>
   </tr>
   <tr>
     <td align="center"><b>Largest files</b> — filter, sort, bulk delete</td>
-    <td align="center"><b>Settings</b> — language, theme, deletion</td>
+    <td align="center"><b>Light theme</b> — or follow the system</td>
   </tr>
 </table>
 
-> Screenshots are rendered from the [design mockup](design/mockup.html) with sample data.
+> Screenshots are taken from the real app running on sample data (`pnpm dev` in a browser uses a built-in
+> mock backend, so nothing from a real disk is shown).
 
 ## 📥 Download
 
@@ -102,11 +114,16 @@ and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for you
 
 Or directly: `pnpm install` then `pnpm tauri dev` / `pnpm tauri build`.
 
+**UI only:** `pnpm dev` and open http://localhost:1420 in a browser. Without the Tauri runtime the app
+switches to a mock backend with sample data, so you can work on the interface without Rust. Add
+`?view=explorer&theme=light&lang=de` to jump straight to a view, theme and language.
+
 ## 🧱 Tech stack
 
 ```
-src-tauri/   Rust core — parallel scanner, size tree, junk rules, delete/trash, Tauri commands
-src/         Svelte 5 + Tailwind 4 + daisyUI 5 — views, canvas treemap, i18n
+src-tauri/   Rust core — scanner + MFT reader, size tree, scan cache, live watcher, duplicates,
+             optimizer (Windows), delete/trash, Tauri commands
+src/         Svelte 5 + Tailwind 4 + daisyUI 5 — views, canvas treemap, i18n, dev mock backend
 design/      HTML mockup and logo explorations
 ```
 
@@ -153,7 +170,9 @@ for CI. Contributors without the key still get a working build — just without 
 - [x] Watch for live changes (ReadDirectoryChangesW / FSEvents / inotify)
 - [x] Hardlink-based dedupe instead of deleting
 - [x] More languages: Español, Français, Polski
-- [ ] Read the NTFS USN Journal to catch up on changes made while Tessera was closed
+- [x] Saved scans that open instantly and catch up via the NTFS USN journal
+- [x] Windows optimizer with switchable profiles
+- [ ] Per-game profiles that switch automatically when a game starts
 - [ ] Even more languages — [help translate!](CONTRIBUTING.md#translations)
 
 ## 🤝 Contributing

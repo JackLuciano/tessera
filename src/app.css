@@ -184,9 +184,11 @@ body { background: var(--color-base-200); color: var(--color-base-content); min-
 
 /* Motion is an app setting (Settings › Animations), not tied to the OS "reduce motion" flag,
    which Windows turns on together with "Animation effects: off" and would freeze every spinner. */
-html.no-anim *, html.no-anim *::before, html.no-anim *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+/* Off means off: no animation at all, so everything is shown in its final state immediately */
+html.no-anim *, html.no-anim *::before, html.no-anim *::after { animation: none !important; transition: none !important; }
+html.no-anim .reveal { opacity: 1; transform: none; }
 /* Progress indicators keep moving even with animations off: a frozen spinner looks like a hang */
-html.no-anim .scan-orb::before { animation-duration: 1.1s !important; animation-iteration-count: infinite !important; }
+html.no-anim .scan-orb::before { animation: spin 1.1s linear infinite !important; }
 
 /* View switch: content slides up and fades in */
 .view-enter { animation: view-in .45s cubic-bezier(.2,.8,.2,1) both; }
@@ -217,7 +219,7 @@ html.no-anim .scan-orb::before { animation-duration: 1.1s !important; animation-
    gradient ends at 0deg; the ring is the outer ~9px, see the mask above) */
 .scan-orb .dot { position: absolute; inset: 0; animation: spin 1.1s linear infinite; }
 .scan-orb .dot::after { content: ""; position: absolute; top: 0; left: 50%; width: 9px; height: 9px; margin-left: -4.5px; border-radius: 50%; background: var(--color-accent); box-shadow: 0 0 14px 2px var(--color-accent); }
-html.no-anim .scan-orb .dot { animation-duration: 1.1s !important; animation-iteration-count: infinite !important; }
+html.no-anim .scan-orb .dot { animation: spin 1.1s linear infinite !important; }
 
 /* Small stat tile: label ellipsizes, value shrinks with the tile so long numbers never overflow */
 .tile-stat { container-type: inline-size; min-width: 0; border-radius: .75rem; padding: .55rem .65rem; background: var(--soft); }
@@ -231,7 +233,8 @@ html.no-anim .scan-orb .dot { animation-duration: 1.1s !important; animation-ite
 .progress-flow.indeterminate > i { width: 35% !important; animation: slide 1.3s ease-in-out infinite; }
 @keyframes flow { to { transform: translateX(100%); } }
 @keyframes slide { from { left: -35%; } to { left: 100%; } }
-html.no-anim .progress-flow > i, html.no-anim .progress-flow > i::after { animation-duration: 1.3s !important; animation-iteration-count: infinite !important; }
+html.no-anim .progress-flow.indeterminate > i { animation: slide 1.3s ease-in-out infinite !important; }
+html.no-anim .progress-flow > i { transition: width .4s cubic-bezier(.2,.8,.2,1) !important; }
 
 .share-bar { position: absolute; left: 0; top: 0; bottom: 0; opacity: .1; border-radius: .6rem; pointer-events: none; transform-origin: left; animation: share-grow .7s cubic-bezier(.2,.8,.2,1) both; }
 @keyframes share-grow { from { transform: scaleX(0); } }
@@ -242,6 +245,22 @@ html.no-anim .progress-flow > i, html.no-anim .progress-flow > i::after { animat
 .live-pill i { position: relative; width: 7px; height: 7px; border-radius: 50%; background: var(--color-success); }
 .live-pill i::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--color-success); animation: ping 1.8s cubic-bezier(0,0,.2,1) infinite; }
 @keyframes ping { 75%, 100% { transform: scale(2.6); opacity: 0; } }
+
+.diverge { position: relative; height: 8px; border-radius: 6px; background: color-mix(in oklch, var(--color-base-content) 6%, transparent); }
+.diverge::before { content: ""; position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px; background: color-mix(in oklch, var(--color-base-content) 25%, transparent); }
+.diverge > i { position: absolute; top: 0; bottom: 0; border-radius: 6px; animation: share-grow .7s cubic-bezier(.2,.8,.2,1) both; }
+.diverge > i.up { left: 50%; background: var(--color-warning); transform-origin: left; }
+.diverge > i.down { right: 50%; background: var(--color-success); transform-origin: right; }
+
+.chip-soft { display: inline-flex; align-items: center; gap: .35rem; padding: .15rem .55rem; border-radius: 999px; font-size: .72rem; font-weight: 600; color: var(--muted); background: var(--soft); white-space: nowrap; }
+
+/* Optimizer profile cards: gradient icon, gradient ring when active */
+.profile-card { position: relative; display: flex; flex-direction: column; padding: 1rem; border-radius: 1rem; background: var(--soft); border: 1px solid var(--glass-border); transition: transform .3s cubic-bezier(.2,.8,.2,1), box-shadow .3s; }
+.profile-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+.profile-card.active { border-color: transparent; background: linear-gradient(var(--glass-solid), var(--glass-solid)) padding-box, var(--grad) border-box; border: 1.5px solid transparent; box-shadow: 0 10px 34px -14px color-mix(in oklch, var(--color-primary) 70%, transparent); }
+.profile-ico { width: 2.6rem; height: 2.6rem; border-radius: .8rem; display: grid; place-items: center; color: #fff; background: var(--grad); box-shadow: 0 6px 18px -8px color-mix(in oklch, var(--color-primary) 80%, transparent); flex: none; }
+.tag { display: inline-flex; align-items: center; gap: .25rem; padding: .1rem .45rem; border-radius: 999px; font-size: .68rem; font-weight: 600; color: var(--muted); background: color-mix(in oklch, var(--color-base-content) 7%, transparent); white-space: nowrap; }
+.tag-warn { color: var(--color-warning); background: color-mix(in oklch, var(--color-warning) 14%, transparent); }
 
 /* Hover glow on cards */
 .glow-hover, .card-lift { position: relative; }

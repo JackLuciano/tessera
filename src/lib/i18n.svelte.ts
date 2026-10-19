@@ -43,7 +43,21 @@ class I18n {
 }
 export const i18n = new I18n();
 
+const plurals = new Map<string, Intl.PluralRules>();
+/** Picks `key.one` / `key.few` / … for the numeric param `n` when the dictionary has that form. */
+function lookup(dict: Dict | undefined, key: string, n: unknown): string | undefined {
+  if (!dict) return undefined;
+  const count = typeof n === 'number' ? n : typeof n === 'string' ? Number(n.replace(/[^\d.]/g, '')) : NaN;
+  if (!Number.isNaN(count)) {
+    let pr = plurals.get(i18n.locale);
+    if (!pr) plurals.set(i18n.locale, (pr = new Intl.PluralRules(i18n.locale)));
+    const form = dict[`${key}.${pr.select(count)}`];
+    if (form) return form;
+  }
+  return dict[key];
+}
+
 export function t(key: string, params?: Record<string, string | number>): string {
-  const s = LOCALES[i18n.locale]?.dict[key] ?? (en as Dict)[key] ?? key;
+  const s = lookup(LOCALES[i18n.locale]?.dict, key, params?.n) ?? lookup(en as Dict, key, params?.n) ?? key;
   return params ? s.replace(/\{(\w+)\}/g, (_, k) => String(params[k] ?? `{${k}}`)) : s;
 }

@@ -314,6 +314,19 @@ impl Tree {
         }
     }
 
+    /// False for nodes detached by `remove` (or below one): their parent chain never reaches the root.
+    pub fn is_live(&self, id: u32) -> bool {
+        let mut cur = id;
+        while cur != 0 {
+            let p = self.nodes[cur as usize].parent;
+            if p == NO_PARENT {
+                return false;
+            }
+            cur = p;
+        }
+        true
+    }
+
     /// Deepest existing directory node on the way to `path` (the root if `path` is outside the tree).
     pub fn find_dir(&self, path: &Path) -> u32 {
         let Ok(rel) = path.strip_prefix(&self.root_path) else { return 0 };
@@ -336,6 +349,10 @@ impl Tree {
     /// existing sub-folders keep their nodes, new sub-folders are walked, files are re-listed.
     /// The size difference is propagated to every ancestor. Returns the change in bytes.
     pub fn refresh_dir(&mut self, id: u32) -> i64 {
+        // A detached node's path would resolve to the root; there is nothing left to refresh
+        if !self.is_live(id) {
+            return 0;
+        }
         let path = self.path_of(id);
         let Ok(rd) = fs::read_dir(&path) else {
             // The folder itself is gone: drop it (the root is never removed)

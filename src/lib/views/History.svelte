@@ -117,7 +117,8 @@
       {#each diff as r (r.path)}
         <div class="grid items-center gap-3 px-2 py-1.5 text-sm row-hover" style="grid-template-columns:minmax(0,1.4fr) 1fr 80px">
           <span class="truncate mono text-xs selectable">{r.path}</span>
-          <div class="flex {r.delta > 0 ? '' : 'justify-end'}"><div class="bar w-full" style="height:8px;background:transparent;{r.delta > 0 ? '' : 'transform:scaleX(-1)'}"><i style="width:{(Math.abs(r.delta) / maxDelta) * 100}%;background:{r.delta > 0 ? 'var(--color-warning)' : 'var(--color-success)'}"></i></div></div>
+          <!-- Diverging bar around a centre axis: shrinking folders extend left, growing ones right -->
+          <div class="diverge"><i class={r.delta > 0 ? 'up' : 'down'} style="width:{(Math.abs(r.delta) / maxDelta) * 50}%"></i></div>
           <span class="mono text-right text-xs" style="color:{r.delta > 0 ? 'var(--color-warning)' : 'var(--color-success)'}">{r.delta > 0 ? '+' : '−'}{fmt(Math.abs(r.delta))}</span>
         </div>
       {/each}

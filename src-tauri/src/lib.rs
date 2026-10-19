@@ -1,7 +1,10 @@
+mod cache;
 mod dupes;
 mod history;
 #[cfg(windows)]
 mod mft;
+#[cfg(windows)]
+mod optimizer;
 mod scanner;
 mod watch;
 
@@ -20,11 +23,23 @@ struct AppState {
     dup_progress: Mutex<Option<Arc<dupes::DupProgress>>>,
     watch: Mutex<Option<watch::LiveWatch>>,
     live: AtomicBool,
+    /// Bumped whenever the tree is replaced, so background work started on an older tree can tell.
+    generation: AtomicU64,
+    /// Kept between calls: CPU usage is measured as the difference between two refreshes.
+    sys: Mutex<sysinfo::System>,
 }
 
 impl Default for AppState {
     fn default() -> Self {
-        Self { tree: Mutex::default(), progress: Mutex::default(), dup_progress: Mutex::default(), watch: Mutex::default(), live: AtomicBool::new(true) }
+        Self {
+            tree: Mutex::default(),
+            progress: Mutex::default(),
+            dup_progress: Mutex::default(),
+            watch: Mutex::default(),
+            live: AtomicBool::new(true),
+            generation: AtomicU64::new(0),
+            sys: Mutex::new(sysinfo::System::new()),
+        }
     }
 }
 
@@ -190,6 +205,13 @@ async fn scan(path: String, app: AppHandle, state: State<'_, AppState>) -> Resul
         })
     };
 
+    // Journal position before reading anything, so the next start can catch up on changes from here on
+    #[cfg(windows)]
+    let journal = cache::usn::position(&root);
+    #[cfg(not(windows))]
+    let journal: Option<(u64, i64)> = None;
+    let started_at = cache::now();
+
     let p = progress.clone();
     let (tree, engine) = tauri::async_runtime::spawn_blocking(move || {
         // Whole-volume scans on NTFS try the MFT fast path first (needs admin),
@@ -219,8 +241,102 @@ async fn scan(path: String, app: AppHandle, state: State<'_, AppState>) -> Resul
         eprintln!("could not save history snapshot: {e}");
     }
     *state.tree.lock() = Some(tree);
+    state.generation.fetch_add(1, Ordering::Relaxed);
     start_watch(&app, &state);
+    save_cache(&app, cache::Meta { saved_at: started_at, journal });
     Ok(s)
+}
+
+/// Write the current tree to the scan cache in the background (copy under the lock, I/O without it).
+fn save_cache(app: &AppHandle, meta: cache::Meta) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let Ok(base) = app.path().app_data_dir() else { return };
+        let (root, raw) = {
+            let st = app.state::<AppState>();
+            let g = st.tree.lock();
+            let Some(t) = g.as_ref() else { return };
+            (t.root_path.to_string_lossy().into_owned(), cache::encode(t, &meta))
+        };
+        if let Err(e) = cache::write(&base, &root, &raw) {
+            eprintln!("could not save the scan cache: {e}");
+        }
+    });
+}
+
+#[derive(Serialize)]
+struct CachedSummary {
+    #[serde(flatten)]
+    summary: ScanSummary,
+    cached_at: u64,
+}
+
+/// Open the saved scan of `root` instantly, then catch up on changes in the background
+/// (`catchup-done` event). Returns `None` when there is no usable saved scan.
+#[tauri::command]
+async fn load_cached(root: String, app: AppHandle, state: State<'_, AppState>) -> Result<Option<CachedSummary>, String> {
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let r = root.clone();
+    let loaded = tauri::async_runtime::spawn_blocking(move || cache::load(&base, &r)).await.map_err(|e| e.to_string())?;
+    let Ok((tree, meta)) = loaded else { return Ok(None) };
+    if !tree.root_path.exists() {
+        return Ok(None);
+    }
+    let s = CachedSummary { summary: summary(&tree, "cache"), cached_at: meta.saved_at };
+    *state.tree.lock() = Some(tree);
+    let generation = state.generation.fetch_add(1, Ordering::Relaxed) + 1;
+
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let st = handle.state::<AppState>();
+        let root = PathBuf::from(&root);
+        #[cfg(windows)]
+        let journal_now = cache::usn::position(&root);
+        #[cfg(not(windows))]
+        let journal_now: Option<(u64, i64)> = None;
+        let started_at = cache::now();
+
+        // Prefer the USN journal (exact, cheap); otherwise stat every folder against the save time
+        #[cfg(windows)]
+        let from_journal = meta.journal.and_then(|(id, usn)| cache::usn::changed_dirs(&root, id, usn));
+        #[cfg(not(windows))]
+        let from_journal: Option<Vec<PathBuf>> = None;
+        let ids: Vec<u32> = match from_journal {
+            Some(paths) => {
+                let g = st.tree.lock();
+                let Some(t) = g.as_ref() else { return };
+                paths.iter().filter(|p| p.starts_with(&t.root_path)).map(|p| t.find_dir(p)).collect()
+            }
+            None => {
+                let dirs = {
+                    let g = st.tree.lock();
+                    let Some(t) = g.as_ref() else { return };
+                    cache::dir_paths(t)
+                };
+                cache::changed_by_mtime(dirs, meta.saved_at)
+            }
+        };
+        let ev = {
+            let mut g = st.tree.lock();
+            let Some(t) = g.as_mut() else { return };
+            // A rescan replaced the tree meanwhile: these ids belong to the old one
+            if st.generation.load(Ordering::Relaxed) != generation {
+                return;
+            }
+            let mut ids = ids;
+            ids.sort_unstable();
+            ids.dedup();
+            let delta: i64 = ids.iter().map(|id| t.refresh_dir(*id)).sum();
+            LiveEvent { folders: ids.len(), delta, size: t.nodes[0].size, files: t.nodes[0].files }
+        };
+        let _ = handle.emit("catchup-done", &ev);
+        start_watch(&handle, &st);
+        // Save the caught-up tree so the next start has less to do
+        if ev.folders > 0 {
+            save_cache(&handle, cache::Meta { saved_at: started_at, journal: journal_now });
+        }
+    });
+    Ok(Some(s))
 }
 
 #[tauri::command]
@@ -325,6 +441,199 @@ async fn hardlink_dupes(pairs: Vec<(u32, u32)>, state: State<'_, AppState>) -> R
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+// ---------- optimizer (Windows only; other platforms report `supported: false`) ----------
+
+#[derive(Serialize)]
+struct TweakState {
+    key: &'static str,
+    on: bool,
+    admin: bool,
+    reboot: bool,
+}
+
+#[derive(Serialize)]
+struct Memory {
+    total: u64,
+    used: u64,
+}
+
+#[derive(Serialize)]
+struct OptStatus {
+    supported: bool,
+    elevated: bool,
+    active: Option<String>,
+    #[cfg(windows)]
+    power_plans: Vec<optimizer::PowerPlan>,
+    #[cfg(not(windows))]
+    power_plans: Vec<()>,
+    tweaks: Vec<TweakState>,
+    has_backup: bool,
+    memory: Memory,
+    cpu: f32,
+}
+
+#[tauri::command]
+async fn opt_status(app: AppHandle, state: State<'_, AppState>) -> Result<OptStatus, String> {
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let (memory, cpu) = {
+        let mut sys = state.sys.lock();
+        sys.refresh_memory();
+        sys.refresh_cpu_usage();
+        (Memory { total: sys.total_memory(), used: sys.used_memory() }, sys.global_cpu_usage())
+    };
+    #[cfg(windows)]
+    {
+        let (plans, tweaks) = tauri::async_runtime::spawn_blocking(|| {
+            let tweaks = optimizer::TWEAKS
+                .iter()
+                .map(|t| TweakState { key: t.key, on: optimizer::tweak_on(t), admin: t.machine(), reboot: t.reboot })
+                .collect::<Vec<_>>();
+            (optimizer::power_plans(), tweaks)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        Ok(OptStatus {
+            supported: true,
+            elevated: mft::is_elevated(),
+            active: optimizer::active_profile(&base),
+            power_plans: plans,
+            tweaks,
+            has_backup: optimizer::has_backup(&base),
+            memory,
+            cpu,
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = base;
+        Ok(OptStatus { supported: false, elevated: false, active: None, power_plans: vec![], tweaks: vec![], has_backup: false, memory, cpu })
+    }
+}
+
+#[derive(Serialize)]
+struct SysStats {
+    memory: Memory,
+    cpu: f32,
+}
+
+/// CPU and memory only, cheap enough to poll every couple of seconds.
+#[tauri::command]
+fn sys_stats(state: State<'_, AppState>) -> SysStats {
+    let mut sys = state.sys.lock();
+    sys.refresh_memory();
+    sys.refresh_cpu_usage();
+    SysStats { memory: Memory { total: sys.total_memory(), used: sys.used_memory() }, cpu: sys.global_cpu_usage() }
+}
+
+#[cfg(windows)]
+type OptResult = Result<optimizer::Outcome, String>;
+#[cfg(not(windows))]
+type OptResult = Result<(), String>;
+
+#[tauri::command]
+async fn opt_apply_profile(profile: String, app: AppHandle) -> OptResult {
+    #[cfg(windows)]
+    {
+        let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        tauri::async_runtime::spawn_blocking(move || optimizer::apply_profile(&base, &profile, mft::is_elevated())).await.map_err(|e| e.to_string())?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (profile, app);
+        Err("the optimizer is only available on Windows".into())
+    }
+}
+
+#[tauri::command]
+async fn opt_set_tweak(key: String, on: bool, app: AppHandle) -> OptResult {
+    #[cfg(windows)]
+    {
+        let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        tauri::async_runtime::spawn_blocking(move || optimizer::set_tweak(&base, &key, on)).await.map_err(|e| e.to_string())?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (key, on, app);
+        Err("the optimizer is only available on Windows".into())
+    }
+}
+
+#[tauri::command]
+async fn opt_set_power_plan(guid: String) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        tauri::async_runtime::spawn_blocking(move || optimizer::set_power_plan(&guid)).await.map_err(|e| e.to_string())?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = guid;
+        Err("the optimizer is only available on Windows".into())
+    }
+}
+
+#[tauri::command]
+async fn opt_restore(app: AppHandle) -> OptResult {
+    #[cfg(windows)]
+    {
+        let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        tauri::async_runtime::spawn_blocking(move || optimizer::restore(&base)).await.map_err(|e| e.to_string())?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Err("the optimizer is only available on Windows".into())
+    }
+}
+
+#[tauri::command]
+#[cfg(windows)]
+fn opt_startup_list() -> Vec<optimizer::StartupApp> {
+    optimizer::startup_list()
+}
+#[tauri::command]
+#[cfg(not(windows))]
+fn opt_startup_list() -> Vec<()> {
+    Vec::new()
+}
+
+#[tauri::command]
+fn opt_startup_set(id: String, enabled: bool, app: AppHandle) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        optimizer::set_startup_tracked(&base, &id, enabled)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (id, enabled, app);
+        Err("the optimizer is only available on Windows".into())
+    }
+}
+
+#[tauri::command]
+#[cfg(windows)]
+async fn opt_processes(state: State<'_, AppState>) -> Result<Vec<optimizer::AppProcess>, String> {
+    Ok(optimizer::processes(&mut state.sys.lock()))
+}
+#[tauri::command]
+#[cfg(not(windows))]
+async fn opt_processes() -> Result<Vec<()>, String> {
+    Ok(Vec::new())
+}
+
+#[tauri::command]
+fn opt_kill(pids: Vec<u32>, state: State<'_, AppState>) -> OptResult {
+    #[cfg(windows)]
+    {
+        Ok(optimizer::kill(&mut state.sys.lock(), &pids))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (pids, state);
+        Err("the optimizer is only available on Windows".into())
+    }
 }
 
 #[tauri::command]
@@ -614,7 +923,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_drives, scan, cancel_scan, get_node, get_ancestors, largest_files, find_junk, delete_nodes, reveal,
             is_elevated, relaunch_as_admin, find_duplicates, cancel_duplicates, hardlink_dupes, history_list, history_diff,
-            set_live_watch, get_summary
+            set_live_watch, get_summary, load_cached,
+            opt_status, opt_apply_profile, opt_set_tweak, opt_set_power_plan, opt_restore, opt_startup_list, opt_startup_set,
+            opt_processes, opt_kill, sys_stats
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

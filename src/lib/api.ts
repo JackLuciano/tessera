@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { i18n, t } from './i18n.svelte';
 
 export type Cat = 'video' | 'games' | 'dev' | 'apps' | 'system' | 'images' | 'cache' | 'archives' | 'docs';
 export type Kind = 'dir' | 'file' | 'bucket';
@@ -7,7 +8,17 @@ export interface Drive { name: string; mount: string; fs: string; total: number;
 export interface DupGroup { size: number; wasted: number; files: { id: number; path: string; modified: number }[] }
 export interface SnapshotInfo { ts: number; size: number; files: number }
 export interface DiffRow { path: string; before: number; after: number; delta: number }
-export interface ScanSummary { engine: 'mft' | 'walk'; root: string; size: number; files: number; dirs: number; elapsed_ms: number; errors: number; cats: { cat: Cat; size: number }[] }
+export type Profile = 'gaming' | 'work' | 'balanced' | 'battery';
+export interface OptOutcome { applied: number; failed: string[]; reboot: boolean }
+export interface OptStatus {
+  supported: boolean; elevated: boolean; active: Profile | null; has_backup: boolean; cpu: number;
+  power_plans: { guid: string; name: string; active: boolean }[];
+  tweaks: { key: string; on: boolean; admin: boolean; reboot: boolean }[];
+  memory: { total: number; used: number };
+}
+export interface StartupApp { id: string; name: string; command: string; enabled: boolean; scope: 'user' | 'machine' }
+export interface AppProcess { name: string; pids: number[]; memory: number; cpu: number; group: string }
+export interface ScanSummary { engine: 'mft' | 'walk' | 'cache' | 'live'; root: string; size: number; files: number; dirs: number; elapsed_ms: number; errors: number; cats: { cat: Cat; size: number }[] }
 export interface TreeNode { id: number; name: string; path: string; size: number; files: number; dirs: number; kind: Kind; cat: Cat; modified: number; child_count: number; children: TreeNode[] }
 export interface FileEntry { id: number; name: string; path: string; size: number; cat: Cat; modified: number }
 export interface JunkGroup { key: string; label: string; hint: string; safe: boolean; size: number; ids: number[]; sample: string[] }
@@ -31,6 +42,20 @@ export const api = {
   hardlinkDupes: (pairs: [number, number][]) => invoke<DeleteResult>('hardlink_dupes', { pairs }),
   setLiveWatch: (enabled: boolean) => invoke<void>('set_live_watch', { enabled }),
   summary: () => invoke<ScanSummary>('get_summary'),
+  /** Saved scan of `root`, or null; changes since then arrive later as `catchup-done`. */
+  loadCached: (root: string) => invoke<(ScanSummary & { cached_at: number }) | null>('load_cached', { root }),
+  opt: {
+    status: () => invoke<OptStatus>('opt_status'),
+    applyProfile: (profile: Profile) => invoke<OptOutcome>('opt_apply_profile', { profile }),
+    setTweak: (key: string, on: boolean) => invoke<OptOutcome>('opt_set_tweak', { key, on }),
+    setPowerPlan: (guid: string) => invoke<void>('opt_set_power_plan', { guid }),
+    restore: () => invoke<OptOutcome>('opt_restore'),
+    startup: () => invoke<StartupApp[]>('opt_startup_list'),
+    setStartup: (id: string, enabled: boolean) => invoke<void>('opt_startup_set', { id, enabled }),
+    processes: () => invoke<AppProcess[]>('opt_processes'),
+    kill: (pids: number[]) => invoke<OptOutcome>('opt_kill', { pids }),
+    stats: () => invoke<{ memory: { total: number; used: number }; cpu: number }>('sys_stats'),
+  },
   historyList: (root: string) => invoke<SnapshotInfo[]>('history_list', { root }),
   historyDiff: (ts: number) => invoke<DiffRow[]>('history_diff', { ts }),
 };
@@ -55,16 +80,21 @@ export function fmt(bytes: number): string {
   return `${v >= 100 || i === 0 ? v.toFixed(0) : v.toFixed(1)} ${u[i]}`;
 }
 export const num = (n: number) => n.toLocaleString('en-US');
-export function ago(unixSecs: number): string {
+/** "3 weeks ago" in the UI language, via the browser's own translations. */
+export function ago(unixSecs: number, fine = false): string {
   if (!unixSecs) return '—';
-  const days = Math.floor((Date.now() / 1000 - unixSecs) / 86400);
-  if (days <= 0) return 'Today';
-  if (days === 1) return 'Yesterday';
-  if (days < 14) return `${days} days ago`;
-  if (days < 60) return `${Math.round(days / 7)} weeks ago`;
-  if (days < 365) return `${Math.round(days / 30)} months ago`;
+  const rtf = new Intl.RelativeTimeFormat(i18n.locale, { numeric: 'auto' });
+  const secs = Date.now() / 1000 - unixSecs;
+  // `fine`: minutes/hours for recent times (saved scans); file dates only need days
+  if (fine && secs < 86400) return secs < 3600 ? rtf.format(-Math.max(1, Math.round(secs / 60)), 'minute') : rtf.format(-Math.round(secs / 3600), 'hour');
+  const days = Math.floor(secs / 86400);
+  if (days < 14) return rtf.format(-Math.max(0, days), 'day');
+  if (days < 60) return rtf.format(-Math.round(days / 7), 'week');
+  if (days < 365) return rtf.format(-Math.round(days / 30), 'month');
   const y = days / 365;
-  return `${y < 2 ? 1 : y.toFixed(1)} year${y >= 2 ? 's' : ''} ago`;
+  return rtf.format(-(y < 2 ? 1 : Math.round(y * 10) / 10), 'year');
 }
+/** Display name; "small files" buckets are named in Rust, so they are translated here. */
+export const nodeName = (n: { kind: Kind; name: string; files?: number }) => (n.kind === 'bucket' ? t('common.smallFiles', { n: num(n.files ?? 0) }) : n.name);
 export const css = (v: string) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 export const catColor = (c: Cat) => `var(--cat-${c})`;

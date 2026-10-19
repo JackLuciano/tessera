@@ -18,7 +18,8 @@
   }
 </script>
 
-<section class="glass p-6 reveal max-w-3xl">
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
+<section class="glass p-6 reveal">
   <h2 class="text-lg font-semibold mb-1">{t('settings.general')}</h2>
   <div class="divide-y divide-[var(--glass-border)]">
     <div class="flex items-center gap-4 py-4">
@@ -40,12 +41,27 @@
       <input type="checkbox" class="toggle toggle-primary" checked={app.animations} onchange={e => app.setAnimations((e.target as HTMLInputElement).checked)} />
     </div>
     <div class="flex items-center gap-4 py-4">
+      <div class="flex-1"><div class="font-medium text-sm">{t('settings.reopen')}</div><div class="text-xs muted">{t('settings.reopenHint')}</div></div>
+      <input type="checkbox" class="toggle toggle-primary" checked={app.reopen} onchange={e => app.setReopen((e.target as HTMLInputElement).checked)} />
+    </div>
+    <div class="flex items-center gap-4 py-4">
       <div class="flex-1"><div class="font-medium text-sm">{t('settings.live')}</div><div class="text-xs muted">{t('settings.liveHint')}</div></div>
       <input type="checkbox" class="toggle toggle-primary" checked={app.live} onchange={e => app.setLive((e.target as HTMLInputElement).checked)} />
     </div>
   </div>
 
-  <h2 class="text-lg font-semibold mt-6 mb-1">{t('settings.deletion')}</h2>
+  <h2 class="text-lg font-semibold mt-6 mb-1">{t('settings.updates')}</h2>
+  <div class="divide-y divide-[var(--glass-border)]">
+    <div class="flex items-center gap-4 py-4">
+      <div class="flex-1"><div class="font-medium text-sm">{t('settings.autoUpdate')}</div><div class="text-xs muted">{t('settings.autoUpdateHint')}</div></div>
+      <input type="checkbox" class="toggle toggle-primary" checked={updater.auto} onchange={e => updater.setAuto((e.target as HTMLInputElement).checked)} />
+    </div>
+  </div>
+</section>
+
+<div class="flex flex-col gap-4">
+<section class="glass p-6 reveal" style="--i:1">
+  <h2 class="text-lg font-semibold mb-1">{t('settings.deletion')}</h2>
   <div class="divide-y divide-[var(--glass-border)]">
     <div class="flex items-center gap-4 py-4">
       <div class="flex-1">
@@ -66,16 +82,10 @@
       <span class="badge badge-ghost">{t('common.always')}</span>
     </div>
   </div>
+</section>
 
-  <h2 class="text-lg font-semibold mt-6 mb-1">{t('settings.updates')}</h2>
-  <div class="divide-y divide-[var(--glass-border)]">
-    <div class="flex items-center gap-4 py-4">
-      <div class="flex-1"><div class="font-medium text-sm">{t('settings.autoUpdate')}</div><div class="text-xs muted">{t('settings.autoUpdateHint')}</div></div>
-      <input type="checkbox" class="toggle toggle-primary" checked={updater.auto} onchange={e => updater.setAuto((e.target as HTMLInputElement).checked)} />
-    </div>
-  </div>
-
-  <div class="flex items-center gap-4 mt-8 p-4 rounded-2xl soft">
+<section class="glass p-5 reveal" style="--i:2">
+  <div class="flex items-center gap-4">
     <Logo size={52} />
     <div class="flex-1"><div class="font-semibold">Tessera {__APP_VERSION__}</div><div class="text-xs muted">{t('settings.about')}</div></div>
     <button class="btn btn-sm" disabled={updater.state === 'checking' || updater.state === 'downloading'} onclick={() => updater.check(false)}>
@@ -83,6 +93,8 @@
     </button>
   </div>
 </section>
+</div>
+</div>
 
 <dialog bind:this={permDlg} class="modal">
   <div class="modal-box glass max-w-md">

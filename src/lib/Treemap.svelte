@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { TreeNode } from './api';
-  import { fmt, num, css } from './api';
+  import { fmt, num, css, nodeName } from './api';
   import { t } from './i18n.svelte';
 
   let { node, onopen, oncontext }: {
@@ -108,7 +108,7 @@
           c.fillStyle = text;
           c.font = `600 ${r.depth === 1 ? 12.5 : 11.5}px ${FONT}`;
           const s = fmt(r.node.size);
-          const label = fit(c, r.node.name, w - 14);
+          const label = fit(c, nodeName(r.node), w - 14);
           c.fillText(label, x + 7, y + 14);
           c.font = `500 10.5px ${MONO}`;
           const sw = c.measureText(s).width;
@@ -134,7 +134,7 @@
         c.shadowColor = 'rgba(0,0,0,.45)'; c.shadowBlur = 3;
         const big = r.depth === 1 && w > 120 && h > 60;
         c.font = `600 ${big ? 13 : 11.5}px ${FONT}`;
-        c.fillText(fit(c, r.node.name, w - 12), x + 7, y + (big ? 19 : 15));
+        c.fillText(fit(c, nodeName(r.node), w - 12), x + 7, y + (big ? 19 : 15));
         if (h > 34) {
           c.globalAlpha = a * .85;
           c.font = `500 ${big ? 11.5 : 10.5}px ${MONO}`;
@@ -275,7 +275,7 @@
     {@const n = hover.node}
     <div class="tt glass" style="left:{tip.x}px;top:{tip.y}px">
       {#if hover.parent}<div class="text-[10.5px] muted truncate max-w-[240px] mb-0.5">{pathTo(hover)}</div>{/if}
-      <div class="flex items-center gap-2 font-semibold"><span class="w-2.5 h-2.5 rounded-sm" style="background:var(--cat-{n.cat})"></span><span class="truncate max-w-[220px]">{n.name}</span></div>
+      <div class="flex items-center gap-2 font-semibold"><span class="w-2.5 h-2.5 rounded-sm" style="background:var(--cat-{n.cat})"></span><span class="truncate max-w-[220px]">{nodeName(n)}</span></div>
       <div class="mono text-lg font-bold mt-1">{fmt(n.size)}</div>
       <div class="muted text-xs">{t('tm.share', { pct: (n.size / (node.size || 1) * 100).toFixed(1), parent: node.name })} · {t('cat.' + n.cat)}</div>
       {#if n.kind === 'dir'}<div class="text-[11px] mt-1" style="color:var(--color-primary)">{t('tm.clickOpen', { files: num(n.files) })}</div>{/if}
