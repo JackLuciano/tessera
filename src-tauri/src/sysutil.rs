@@ -83,6 +83,8 @@ pub fn ps_quote(s: &str) -> String {
 
 #[derive(serde::Serialize, Clone, Copy, PartialEq, Debug)]
 #[serde(rename_all = "snake_case")]
+// Restore points only exist on Windows; elsewhere only `Unsupported` is ever returned
+#[cfg_attr(not(windows), allow(dead_code))]
 pub enum RestorePoint {
     /// A new restore point was created.
     Created,

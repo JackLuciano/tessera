@@ -32,6 +32,8 @@ pub struct HealthReport {
     pub can_optimize: bool,
 }
 
+// Windows reports media types as words or numbers; the other platforms detect them directly
+#[cfg_attr(not(windows), allow(dead_code))]
 fn norm_media(s: &str) -> String {
     match s.to_lowercase().as_str() {
         "ssd" | "4" => "ssd".into(),

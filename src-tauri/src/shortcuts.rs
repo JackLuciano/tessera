@@ -160,14 +160,17 @@ fn target_of(desktop: &Path) -> Option<PathBuf> {
     (p.is_absolute() && !p.ends_with("env")).then_some(p)
 }
 
+#[cfg(windows)]
 fn u16_at(b: &[u8], o: usize) -> Option<usize> {
     Some(u16::from_le_bytes(b.get(o..o + 2)?.try_into().ok()?) as usize)
 }
+#[cfg(windows)]
 fn u32_at(b: &[u8], o: usize) -> Option<usize> {
     Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?) as usize)
 }
 
 /// NUL-terminated UTF-16 string starting at `o`.
+#[cfg(windows)]
 fn utf16z(b: &[u8], o: usize, max_units: usize) -> Option<String> {
     let mut units = Vec::new();
     let mut i = o;

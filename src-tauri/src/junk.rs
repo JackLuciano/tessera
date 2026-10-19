@@ -13,6 +13,8 @@ use std::time::{Duration, SystemTime};
 
 const DAY: Duration = Duration::from_secs(86_400);
 
+// Single-file and pattern targets are only used by the Windows rules
+#[cfg_attr(not(windows), allow(dead_code))]
 enum Target {
     /// Everything inside a folder that was not modified within `min_age`.
     Contents(PathBuf, Duration),
