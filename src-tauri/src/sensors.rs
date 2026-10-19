@@ -494,10 +494,12 @@ pub fn throttle_events() -> Vec<ThrottleEvent> {
     st.events.iter().chain(st.open.iter()).cloned().collect()
 }
 
-/// Begin / end collecting throttling for a game session.
+/// Begin / end collecting throttling for a game session (game mode is Windows-only).
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn session_begin() {
     state().lock().session = Some(Vec::new());
 }
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn session_end() -> Vec<ThrottleEvent> {
     let mut st = state().lock();
     let mut v = st.session.take().unwrap_or_default();
