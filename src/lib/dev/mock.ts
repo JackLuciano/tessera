@@ -95,18 +95,29 @@ const junkRule = (key: string, label: string, hint: string, safe: boolean, names
 
 let activeProfile = 'gaming';
 
+/** Command call counts, for checking that views don't refetch too often (`window.__mockCalls`). */
+const calls: Record<string, number> = ((window as unknown as { __mockCalls: Record<string, number> }).__mockCalls = {});
+let liveTimer: ReturnType<typeof setInterval> | undefined;
+
 async function fakeScan() {
   const total = nodes[0];
   for (let i = 1; i <= 12; i++) {
     await new Promise(r => setTimeout(r, 110));
     await emit('scan-progress', { files: Math.round(total.files * i / 12), dirs: Math.round(total.dirs * i / 12), bytes: Math.round(total.size * i / 12) });
   }
+  // Like a busy system drive: a few folders change every second
+  clearInterval(liveTimer);
+  liveTimer = setInterval(() => {
+    total.size += 4096;
+    emit('live-change', { folders: 3, delta: 4096, size: total.size, files: total.files });
+  }, 1000);
   return summary();
 }
 
 export function installMock() {
   mockIPC(async (cmd, args) => {
     const a = (args ?? {}) as Record<string, any>;
+    calls[cmd] = (calls[cmd] ?? 0) + 1;
     switch (cmd) {
       case 'list_drives': return [
         { name: 'Windows', mount: 'C:\\', fs: 'NTFS', total: 1000 * GB, available: 1000 * GB - nodes[0].size * 1.04, removable: false, kind: 'SSD' },
@@ -200,7 +211,16 @@ export function installMock() {
       ];
       case 'opt_kill': return { applied: (a.pids ?? []).length, failed: [], reboot: false };
       case 'set_live_watch': case 'cancel_scan': case 'cancel_duplicates': case 'reveal': return null;
-      case 'delete_nodes': return { freed: (a.ids as number[]).reduce((s, id) => s + nodes[id].size, 0), deleted: a.ids.length, failed: [] };
+      case 'delete_nodes': {
+        const ids = (a.ids as number[]).filter(id => nodes[id]);
+        const total_bytes = ids.reduce((s, id) => s + nodes[id].size, 0);
+        for (let i = 1; i <= 20; i++) {
+          await new Promise(r => setTimeout(r, 150));
+          await emit('delete-progress', { done: Math.round(ids.length * i / 20), total: ids.length, bytes: total_bytes * i / 20, total_bytes });
+        }
+        return { freed: total_bytes, deleted: ids.length, failed: [], cancelled: false };
+      }
+      case 'cancel_delete': return null;
       case 'hardlink_dupes': return { freed: 12 * GB, deleted: a.pairs.length, failed: [] };
       case 'plugin:updater|check': return null;
       case 'plugin:dialog|open': return null;

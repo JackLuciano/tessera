@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { app } from '../store.svelte';
   import { api, fmt, type SnapshotInfo, type DiffRow } from '../api';
   import { t, i18n } from '../i18n.svelte';
@@ -14,8 +15,10 @@
 
   $effect(() => {
     void app.version;
-    if (!app.summary) return;
-    api.historyList(app.summary.root).then(s => {
+    // Snapshots only change with a new scan; live ticks (which replace summary) must not reload them
+    const root = untrack(() => app.summary?.root);
+    if (!root) return;
+    api.historyList(root).then(s => {
       snaps = s;
       // Default comparison: the snapshot before the latest one
       sel = s.length > 1 ? s[s.length - 2].ts : null;
@@ -27,9 +30,12 @@
   });
   $effect(() => {
     if (!wrap) return;
-    const ro = new ResizeObserver(() => (W = wrap!.clientWidth));
+    const measure = () => { if (wrap) W = wrap.clientWidth; };
+    measure();
+    const ro = new ResizeObserver(measure);
     ro.observe(wrap);
-    return () => ro.disconnect();
+    window.addEventListener('resize', measure);
+    return () => { ro.disconnect(); window.removeEventListener('resize', measure); };
   });
 
   const date = (ts: number) => new Date(ts * 1000).toLocaleString(i18n.locale, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });

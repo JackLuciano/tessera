@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { app, IS_WINDOWS, type View } from './store.svelte';
   import { api, fmt, type FileEntry } from './api';
   import { t } from './i18n.svelte';
@@ -31,7 +32,7 @@
       q = ''; sel = 0;
       dlg.showModal();
       setTimeout(() => input?.focus(), 20);
-      if (app.summary) api.largestFiles(40).then(f => (files = f)).catch(() => {});
+      if (untrack(() => app.summary)) api.largestFiles(40).then(f => (files = f)).catch(() => {});
     } else if (!app.paletteOpen && dlg.open) dlg.close();
   });
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { app } from '../store.svelte';
   import { api, fmt, type JunkGroup } from '../api';
   import { t } from '../i18n.svelte';
@@ -10,11 +11,21 @@
   let open = $state<string | null>(null);
   let loading = $state(false);
 
+  let loadedVersion = -1;
   $effect(() => {
-    void app.version;
-    if (!app.summary) return;
-    loading = true;
-    api.junk().then(g => { groups = g; on = new Set(g.filter(x => x.safe).map(x => x.key)); }).finally(() => (loading = false));
+    const version = app.version;
+    void app.liveVersion;
+    // summary is replaced on every live tick; reading it untracked keeps this from re-running constantly
+    if (!untrack(() => app.summary)) return;
+    // A rescan or delete reloads visibly and resets the selection; live changes refresh silently
+    const fresh = version !== loadedVersion;
+    if (fresh) loading = true;
+    api.junk().then(g => {
+      groups = g;
+      const prev = untrack(() => on);
+      on = new Set(g.filter(x => (fresh ? x.safe : prev.has(x.key))).map(x => x.key));
+      loadedVersion = version;
+    }).finally(() => (loading = false));
   });
 
   let selected = $derived(groups.filter(g => on.has(g.key)));
@@ -22,10 +33,15 @@
   let used = $derived(app.drive ? app.drive.total - app.drive.available : 0);
   let cap = $derived(app.drive?.total ?? 1);
 
+  // Rules are defined in Rust with English text; the UI translates them by key and falls back to that text
+  const tr = (key: string, fallback: string) => { const s = t(key); return s === key ? fallback : s; };
+  const label = (g: JunkGroup) => tr(`junk.${g.key}`, g.label);
+  const hint = (g: JunkGroup) => tr(`junk.${g.key}.hint`, g.hint);
+
   function toggle(k: string) { const s = new Set(on); s.has(k) ? s.delete(k) : s.add(k); on = s; }
   function clean(ev: MouseEvent) {
     // One line per group in the dialog, but every matched folder id is deleted
-    confirmDelete.ask(selected.map((g, i) => ({ id: -1 - i, name: `${g.label} (${g.ids.length})`, size: g.size })), ev);
+    confirmDelete.ask(selected.map((g, i) => ({ id: -1 - i, name: `${label(g)} (${g.ids.length})`, size: g.size })), ev);
     confirmDelete.idsOverride = selected.flatMap(g => g.ids);
   }
 </script>
@@ -59,8 +75,8 @@
               <input type="checkbox" class="checkbox checkbox-primary checkbox-sm" checked={on.has(g.key)} tabindex="-1" />
               <span class="w-9 h-9 rounded-lg grid place-items-center shrink-0 soft"><Icon name="cache" size="1rem" /></span>
               <div class="flex-1 min-w-0">
-                <div class="text-sm font-medium truncate">{g.label} <span class="muted font-normal">· {t('cleanup.nFolders', { n: g.ids.length })}</span></div>
-                <div class="text-[11px] muted truncate">{g.hint}</div>
+                <div class="text-sm font-medium truncate">{label(g)} <span class="muted font-normal">· {t('cleanup.nFolders', { n: g.ids.length })}</span></div>
+                <div class="text-[11px] muted truncate">{hint(g)}</div>
               </div>
               <span class="badge badge-soft badge-xs {g.safe ? 'badge-success' : 'badge-warning'}">{g.safe ? t('cleanup.safe') : t('cleanup.review')}</span>
               <span class="mono text-sm font-semibold w-20 text-right">{fmt(g.size)}</span>

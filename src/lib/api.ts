@@ -22,7 +22,8 @@ export interface ScanSummary { engine: 'mft' | 'walk' | 'cache' | 'live'; root: 
 export interface TreeNode { id: number; name: string; path: string; size: number; files: number; dirs: number; kind: Kind; cat: Cat; modified: number; child_count: number; children: TreeNode[] }
 export interface FileEntry { id: number; name: string; path: string; size: number; cat: Cat; modified: number }
 export interface JunkGroup { key: string; label: string; hint: string; safe: boolean; size: number; ids: number[]; sample: string[] }
-export interface DeleteResult { freed: number; deleted: number; failed: string[] }
+export interface DeleteResult { freed: number; deleted: number; failed: string[]; cancelled?: boolean }
+export interface DeleteProgress { done: number; total: number; bytes: number; total_bytes: number }
 
 export const api = {
   drives: () => invoke<Drive[]>('list_drives'),
@@ -33,6 +34,7 @@ export const api = {
   largestFiles: (limit = 300) => invoke<FileEntry[]>('largest_files', { limit }),
   junk: () => invoke<JunkGroup[]>('find_junk'),
   delete: (ids: number[], permanent: boolean) => invoke<DeleteResult>('delete_nodes', { ids, permanent }),
+  cancelDelete: () => invoke<void>('cancel_delete'),
   reveal: (path: string) => invoke<void>('reveal', { path }),
   isElevated: () => invoke<boolean>('is_elevated'),
   relaunchAsAdmin: () => invoke<void>('relaunch_as_admin'),

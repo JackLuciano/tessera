@@ -37,6 +37,11 @@ class AppStore {
   /** Folders refreshed by the watcher since the last scan, for the header indicator. */
   liveFolders = $state(0);
   #liveTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Bytes changed by live events since the views last refetched. */
+  #liveDelta = 0;
+  /** Latest totals from live events, applied to `summary` together with the next view refresh. */
+  #liveTotals: { size: number; files: number } | null = null;
+  #liveFoldersPending = 0;
   /** Open the last saved scan on start instead of an empty screen. */
   reopen = $state<boolean>(load('tessera-reopen', true));
   /** When the shown results come from a saved scan: its time (unix seconds); null after a fresh scan. */
@@ -50,10 +55,21 @@ class AppStore {
     await listen<{ files: number; dirs: number; bytes: number }>('scan-progress', e => { this.progress = e.payload; });
     await listen<{ folders: number; delta: number; size: number; files: number }>('live-change', e => {
       if (!this.summary || this.scanning) return;
-      this.liveFolders += e.payload.folders;
-      this.summary = { ...this.summary, size: e.payload.size, files: e.payload.files };
-      // Views refetch at most every 5 s, however busy the disk is
-      this.#liveTimer ??= setTimeout(() => { this.#liveTimer = null; this.liveVersion++; }, 5000);
+      // A busy system drive changes every few seconds (logs, browser caches). Nothing reactive is
+      // touched here: `summary` and the views only update once the changes add up to something
+      // visible, at most every 15 s. Changing `summary` per event re-rendered every page constantly.
+      this.#liveTotals = { size: e.payload.size, files: e.payload.files };
+      this.#liveFoldersPending += e.payload.folders;
+      this.#liveDelta += Math.abs(e.payload.delta);
+      if (this.#liveDelta < Math.max(64 * 1024 ** 2, e.payload.size * 0.002)) return;
+      this.#liveTimer ??= setTimeout(() => {
+        this.#liveTimer = null;
+        this.#liveDelta = 0;
+        if (this.summary && this.#liveTotals) this.summary = { ...this.summary, ...this.#liveTotals };
+        this.liveFolders += this.#liveFoldersPending;
+        this.#liveFoldersPending = 0;
+        this.liveVersion++;
+      }, 15000);
     });
     await listen<{ folders: number; size: number; files: number }>('catchup-done', e => {
       if (!this.summary) return;

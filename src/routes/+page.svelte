@@ -72,26 +72,27 @@
 <div class="bg-blobs"><span></span><span></span><span></span></div>
 
 <div class="relative z-10 flex min-h-screen">
-  <aside class="flex flex-col w-64 shrink-0 p-4 gap-4 sticky top-0 h-screen">
-    <div class="glass flex-1 flex flex-col p-4 gap-6 overflow-y-auto overflow-x-hidden">
-      <div class="flex items-center gap-3 px-1">
+  <!-- Below 1024 px the sidebar collapses to an icon rail so the content keeps its room -->
+  <aside class="flex flex-col w-[84px] lg:w-64 shrink-0 p-3 lg:p-4 gap-4 sticky top-0 h-screen">
+    <div class="glass flex-1 flex flex-col p-2 lg:p-4 gap-6 overflow-y-auto overflow-x-hidden">
+      <div class="flex items-center gap-3 px-1 max-lg:justify-center max-lg:pt-2">
         <Logo size={40} />
-        <div>
+        <div class="min-w-0 max-lg:hidden">
           <div class="font-bold text-lg leading-tight tracking-tight">Tessera</div>
-          <div class="text-xs muted">{t('app.tagline')}</div>
+          <div class="text-xs muted truncate">{t('app.tagline')}</div>
         </div>
       </div>
 
-      <nav class="flex flex-col gap-1 pl-2 stagger">
+      <nav class="flex flex-col gap-1 lg:pl-2 stagger">
         {#each NAV as n (n.v)}
-          <button class="nav-item {app.view === n.v ? 'active' : ''}" onclick={() => (app.view = n.v)}>
-            <Icon name={n.ico} /><span>{t('nav.' + n.v)}</span>
+          <button class="nav-item max-lg:justify-center {app.view === n.v ? 'active' : ''}" title={t('nav.' + n.v)} onclick={() => (app.view = n.v)}>
+            <Icon name={n.ico} /><span class="max-lg:hidden">{t('nav.' + n.v)}</span>
           </button>
         {/each}
       </nav>
 
       <div>
-        <div class="flex items-center justify-between px-1 mb-2">
+        <div class="flex items-center justify-between px-1 mb-2 max-lg:hidden">
           <div class="text-xs uppercase tracking-wider muted font-semibold">{t('nav.drives')}</div>
           <button class="btn btn-ghost btn-xs btn-square" title={t('action.refresh')} onclick={() => app.refreshDrives()}><Icon name="refresh" size=".9rem" /></button>
         </div>
@@ -100,18 +101,24 @@
             {@const used = d.total - d.available}
             {@const p = (used / d.total) * 100}
             {@const active = app.drive?.mount === d.mount}
-            <button class="rounded-xl p-2.5 text-left transition {active ? '' : 'opacity-75 hover:opacity-100'}"
+            {@const label = `${d.name || t('drive.local')} (${d.mount.replace(/\\$/, '')})`}
+            <button class="rounded-xl p-2.5 text-left transition min-w-0 {active ? '' : 'opacity-75 hover:opacity-100'}"
               style={active ? 'background:color-mix(in oklch,var(--color-primary) 10%,transparent)' : ''}
+              title={`${label} · ${t('drive.freeOf', { free: fmt(d.available), total: fmt(d.total) })}`}
               onclick={() => app.openDrive(d.mount)} disabled={app.scanning}>
-              <div class="flex items-center gap-2 text-sm font-medium"><Icon name={d.removable ? 'usb' : 'drive'} size="1rem" /><span class="truncate">{d.name || t('drive.local')} ({d.mount.replace(/\\$/, '')})</span></div>
+              <div class="flex items-center gap-2 text-sm font-medium max-lg:justify-center">
+                <Icon name={d.removable ? 'usb' : 'drive'} size="1rem" />
+                <span class="truncate max-lg:hidden">{label}</span>
+                <span class="lg:hidden text-xs mono">{d.mount.replace(/[:\\/]+$/, '')}</span>
+              </div>
               <div class="bar mt-2"><i style="width:{p}%;background:{p > 90 ? 'var(--color-warning)' : 'linear-gradient(90deg,var(--color-primary),var(--color-accent))'}"></i></div>
-              <div class="text-[11px] muted mt-1 mono">{t('drive.freeOf', { free: fmt(d.available), total: fmt(d.total) })}</div>
+              <div class="text-[11px] muted mt-1 mono truncate max-lg:hidden">{t('drive.freeOf', { free: fmt(d.available), total: fmt(d.total) })}</div>
             </button>
           {/each}
         </div>
       </div>
 
-      <div class="mt-auto rounded-xl p-3 soft text-xs">
+      <div class="mt-auto rounded-xl p-3 soft text-xs max-lg:hidden">
         {#if app.elevated}
           <div class="flex items-center gap-2 text-sm font-medium"><span class="w-2 h-2 rounded-full" style="background:var(--color-success)"></span> {t('engine.mft')}</div>
           <div class="muted mt-1">{t('engine.mftHint')}</div>
@@ -136,11 +143,12 @@
         <span class="live-pill" title={t('live.hint', { n: num(app.liveFolders) })}><i></i>{t('live.on')}</span>
       {/if}
       {#if app.summary && app.cachedAt}
-        <span class="chip-soft" title={t('cache.savedHint')}><Icon name="history" size=".8rem" />{t('cache.saved', { when: ago(app.cachedAt, true) })}</span>
+        <span class="chip-soft" title={`${t('cache.saved', { when: ago(app.cachedAt, true) })} — ${t('cache.savedHint')}`}><Icon name="history" size=".8rem" /><span class="max-2xl:hidden">{t('cache.saved', { when: ago(app.cachedAt, true) })}</span></span>
       {/if}
-      <div class="ml-auto flex items-center gap-2">
-        <button class="btn btn-ghost btn-sm gap-3 font-normal muted border hairline" onclick={() => (app.paletteOpen = true)}>
-          <Icon name="search" size="1rem" />{t('palette.short')}<span class="flex gap-1"><kbd class="kbd kbd-xs">Ctrl</kbd><kbd class="kbd kbd-xs">K</kbd></span>
+      <!-- Button labels give way to icons as the window narrows, so the page title never gets squeezed -->
+      <div class="ml-auto flex items-center gap-2 shrink-0">
+        <button class="btn btn-ghost btn-sm gap-3 font-normal muted border hairline" title="{t('palette.short')} (Ctrl+K)" onclick={() => (app.paletteOpen = true)}>
+          <Icon name="search" size="1rem" /><span class="max-xl:hidden">{t('palette.short')}</span><span class="flex gap-1 max-xl:hidden"><kbd class="kbd kbd-xs">Ctrl</kbd><kbd class="kbd kbd-xs">K</kbd></span>
         </button>
         {#if updater.state === 'available' || updater.state === 'downloading' || updater.state === 'ready'}
           <button class="btn btn-sm btn-soft btn-success gap-1.5 shine" onclick={() => (updater.modal = true)}>
@@ -148,13 +156,13 @@
             {updater.state === 'ready' ? t('update.restartShort') : t('update.pill', { version: updater.version })}
           </button>
         {/if}
-        <button class="btn btn-ghost btn-sm gap-2" onclick={pickFolder} disabled={app.scanning}><Icon name="folder" size="1rem" />{t('action.scanFolderPick')}</button>
+        <button class="btn btn-ghost btn-sm gap-2" title={t('action.scanFolderPick')} onclick={pickFolder} disabled={app.scanning}><Icon name="folder" size="1rem" /><span class="max-xl:hidden">{t('action.scanFolderPick')}</span></button>
         <button class="btn btn-ghost btn-square btn-sm" title={t('settings.theme')}
           onclick={() => app.setMode(document.documentElement.dataset.theme === 'tessera-dark' ? 'light' : 'dark')}>
           <Icon name={app.mode === 'light' ? 'moon' : 'sun'} />
         </button>
-        <button class="btn btn-primary btn-sm shine gap-2" onclick={() => app.scan()} disabled={app.scanning || !app.target}>
-          <Icon name="refresh" />{app.summary ? t('action.rescan') : t('action.scan')}
+        <button class="btn btn-primary btn-sm shine gap-2" title={app.summary ? t('action.rescan') : t('action.scan')} onclick={() => app.scan()} disabled={app.scanning || !app.target}>
+          <Icon name="refresh" /><span class="max-lg:hidden">{app.summary ? t('action.rescan') : t('action.scan')}</span>
         </button>
       </div>
     </header>

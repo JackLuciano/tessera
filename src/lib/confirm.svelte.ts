@@ -1,4 +1,5 @@
-import { api, fmt } from './api';
+import { listen } from '@tauri-apps/api/event';
+import { api, fmt, type DeleteProgress } from './api';
 import { app } from './store.svelte';
 import { t } from './i18n.svelte';
 
@@ -10,6 +11,10 @@ class ConfirmState {
   permanent = $state(false);
   ack = $state(false);
   busy = $state(false);
+  /** Live progress while deleting (null before the first update). */
+  progress = $state<DeleteProgress | null>(null);
+  stopping = $state(false);
+  started = 0;
   /** When set, these ids are deleted instead of `items` (used for grouped cleanup rows). */
   idsOverride: number[] | null = null;
   private onDone: ((freed: number, ids: number[]) => void) | null = null;
@@ -29,11 +34,16 @@ class ConfirmState {
 
   async run() {
     this.busy = true;
+    this.stopping = false;
+    this.progress = null;
+    this.started = Date.now();
+    const unlisten = await listen<DeleteProgress>('delete-progress', e => (this.progress = e.payload));
     try {
       const ids = this.idsOverride ?? this.items.map(i => i.id);
       const res = await api.delete(ids, this.permanent);
+      if (res.cancelled) app.toast(t('confirm.stopped', { size: fmt(res.freed) }), 'info');
+      else if (res.deleted) app.toast(t(this.permanent ? 'toast.deletedPerm' : 'toast.recycled', { size: fmt(res.freed) }), this.permanent ? 'warning' : 'success');
       if (res.deleted) {
-        app.toast(t(this.permanent ? 'toast.deletedPerm' : 'toast.recycled', { size: fmt(res.freed) }), this.permanent ? 'warning' : 'success');
         await app.afterDelete(res.freed);
         this.onDone?.(res.freed, ids);
       }
@@ -41,9 +51,24 @@ class ConfirmState {
     } catch (e) {
       app.toast(String(e), 'error');
     } finally {
+      unlisten();
       this.busy = false;
       this.open = false;
+      this.progress = null;
     }
+  }
+
+  stop() {
+    this.stopping = true;
+    api.cancelDelete().catch(() => {});
+  }
+
+  /** Rough time left from the byte rate so far; null until there is enough to go on. */
+  get eta(): number | null {
+    const p = this.progress;
+    const elapsed = (Date.now() - this.started) / 1000;
+    if (!p || p.bytes <= 0 || elapsed < 1.5) return null;
+    return Math.max(0, ((p.total_bytes - p.bytes) / p.bytes) * elapsed);
   }
 }
 

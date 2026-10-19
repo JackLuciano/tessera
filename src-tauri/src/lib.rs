@@ -1,4 +1,5 @@
 mod cache;
+mod delete;
 mod dupes;
 mod history;
 #[cfg(windows)]
@@ -27,6 +28,7 @@ struct AppState {
     generation: AtomicU64,
     /// Kept between calls: CPU usage is measured as the difference between two refreshes.
     sys: Mutex<sysinfo::System>,
+    delete_cancel: AtomicBool,
 }
 
 impl Default for AppState {
@@ -39,6 +41,7 @@ impl Default for AppState {
             live: AtomicBool::new(true),
             generation: AtomicU64::new(0),
             sys: Mutex::new(sysinfo::System::new()),
+            delete_cancel: AtomicBool::new(false),
         }
     }
 }
@@ -206,10 +209,7 @@ async fn scan(path: String, app: AppHandle, state: State<'_, AppState>) -> Resul
     };
 
     // Journal position before reading anything, so the next start can catch up on changes from here on
-    #[cfg(windows)]
-    let journal = cache::usn::position(&root);
-    #[cfg(not(windows))]
-    let journal: Option<(u64, i64)> = None;
+    let journal = journal_position(&root);
     let started_at = cache::now();
 
     let p = progress.clone();
@@ -245,6 +245,28 @@ async fn scan(path: String, app: AppHandle, state: State<'_, AppState>) -> Resul
     start_watch(&app, &state);
     save_cache(&app, cache::Meta { saved_at: started_at, journal });
     Ok(s)
+}
+
+/// (journal id, next USN) of the volume holding `root`; NTFS on Windows with admin rights only.
+fn journal_position(root: &std::path::Path) -> Option<(u64, i64)> {
+    #[cfg(windows)]
+    return cache::usn::position(root);
+    #[cfg(not(windows))]
+    {
+        let _ = root;
+        None
+    }
+}
+
+/// Folders changed since a journal position, or `None` when the journal can't answer that.
+fn journal_changes(root: &std::path::Path, journal: u64, from: i64) -> Option<Vec<PathBuf>> {
+    #[cfg(windows)]
+    return cache::usn::changed_dirs(root, journal, from);
+    #[cfg(not(windows))]
+    {
+        let _ = (root, journal, from);
+        None
+    }
 }
 
 /// Write the current tree to the scan cache in the background (copy under the lock, I/O without it).
@@ -290,17 +312,11 @@ async fn load_cached(root: String, app: AppHandle, state: State<'_, AppState>) -
     std::thread::spawn(move || {
         let st = handle.state::<AppState>();
         let root = PathBuf::from(&root);
-        #[cfg(windows)]
-        let journal_now = cache::usn::position(&root);
-        #[cfg(not(windows))]
-        let journal_now: Option<(u64, i64)> = None;
+        let journal_now = journal_position(&root);
         let started_at = cache::now();
 
         // Prefer the USN journal (exact, cheap); otherwise stat every folder against the save time
-        #[cfg(windows)]
-        let from_journal = meta.journal.and_then(|(id, usn)| cache::usn::changed_dirs(&root, id, usn));
-        #[cfg(not(windows))]
-        let from_journal: Option<Vec<PathBuf>> = None;
+        let from_journal = meta.journal.and_then(|(id, usn)| journal_changes(&root, id, usn));
         let ids: Vec<u32> = match from_journal {
             Some(paths) => {
                 let g = st.tree.lock();
@@ -437,7 +453,7 @@ async fn hardlink_dupes(pairs: Vec<(u32, u32)>, state: State<'_, AppState>) -> R
                 Err(e) => failed.push(format!("{}: {e}", dup.display())),
             }
         }
-        DeleteResult { freed, deleted, failed }
+        DeleteResult { freed, deleted, failed, cancelled: false }
     })
     .await
     .map_err(|e| e.to_string())
@@ -446,6 +462,8 @@ async fn hardlink_dupes(pairs: Vec<(u32, u32)>, state: State<'_, AppState>) -> R
 // ---------- optimizer (Windows only; other platforms report `supported: false`) ----------
 
 #[derive(Serialize)]
+// Only filled on Windows; elsewhere the optimizer reports `supported: false` with an empty list
+#[cfg_attr(not(windows), allow(dead_code))]
 struct TweakState {
     key: &'static str,
     on: bool,
@@ -836,51 +854,115 @@ struct DeleteResult {
     freed: u64,
     deleted: usize,
     failed: Vec<String>,
+    cancelled: bool,
 }
 
 /// Delete nodes by id. `permanent` skips the Recycle Bin / Trash.
 #[tauri::command]
-async fn delete_nodes(ids: Vec<u32>, permanent: bool, state: State<'_, AppState>) -> Result<DeleteResult, String> {
-    let targets: Vec<(u32, PathBuf, Kind, u64)> = {
+async fn delete_nodes(ids: Vec<u32>, permanent: bool, app: AppHandle, state: State<'_, AppState>) -> Result<DeleteResult, String> {
+    let (targets, generation): (Vec<(u32, PathBuf, Kind, u64)>, u64) = {
         let g = state.tree.lock();
         let t = g.as_ref().ok_or("no scan yet")?;
-        ids.iter()
+        let targets = ids
+            .iter()
             .filter(|id| (**id as usize) < t.nodes.len() && **id != 0)
             .map(|id| { let n = &t.nodes[*id as usize]; (*id, t.path_of(*id), n.kind, n.size) })
-            .collect()
+            .collect();
+        (targets, state.generation.load(Ordering::Relaxed))
     };
-    let mut ok = Vec::new();
-    let mut failed = Vec::new();
-    for (id, path, kind, _) in &targets {
-        if *kind == Kind::Bucket {
-            failed.push(format!("{}: small-file groups can't be deleted as one item", path.display()));
-            continue;
+    state.delete_cancel.store(false, Ordering::Relaxed);
+
+    // Deleting thousands of folders takes a while: run off the async runtime and report progress
+    let handle = app.clone();
+    let (ok, failed, freed, cancelled) = tauri::async_runtime::spawn_blocking(move || {
+        let st = handle.state::<AppState>();
+        let mut failed = Vec::new();
+        let mut items: Vec<(u32, PathBuf, bool, u64)> = Vec::new();
+        for (id, path, kind, size) in targets {
+            if kind == Kind::Bucket {
+                failed.push(format!("{}: small-file groups can't be deleted as one item", path.display()));
+            } else if is_protected(&path) {
+                failed.push(format!("{}: protected system location", path.display()));
+            } else {
+                items.push((id, path, kind == Kind::Dir, size));
+            }
         }
-        if is_protected(path) {
-            failed.push(format!("{}: protected system location", path.display()));
-            continue;
-        }
-        let res = if permanent {
-            if *kind == Kind::Dir { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) }.map_err(|e| e.to_string())
-        } else {
-            trash::delete(path).map_err(|e| e.to_string())
+        let total = items.len();
+        let total_bytes: u64 = items.iter().map(|i| i.3).sum();
+        let progress = Arc::new(delete::Progress::new());
+
+        // ~8 updates a second, plus the cancel flag mirrored into the deleter
+        let finished = Arc::new(AtomicBool::new(false));
+        let ticker = {
+            let (p, fin, h) = (progress.clone(), finished.clone(), handle.clone());
+            std::thread::spawn(move || {
+                while !fin.load(Ordering::Relaxed) {
+                    let st = h.state::<AppState>();
+                    if st.delete_cancel.load(Ordering::Relaxed) {
+                        p.cancel.store(true, Ordering::Relaxed);
+                    }
+                    let _ = h.emit("delete-progress", DeleteProgress {
+                        done: p.done.load(Ordering::Relaxed),
+                        total,
+                        bytes: p.bytes.load(Ordering::Relaxed).min(total_bytes),
+                        total_bytes,
+                    });
+                    std::thread::sleep(Duration::from_millis(120));
+                }
+            })
         };
-        match res {
-            Ok(()) => ok.push(*id),
-            Err(e) => failed.push(format!("{}: {e}", path.display())),
+
+        let jobs: Vec<(PathBuf, bool, u64)> = items.iter().map(|i| (i.1.clone(), i.2, i.3)).collect();
+        let outcome = if permanent { delete::permanent_all(&jobs, &progress) } else { delete::trash_all(&jobs, &progress) };
+        finished.store(true, Ordering::Relaxed);
+        let _ = ticker.join();
+
+        let mut ok = Vec::new();
+        let mut freed = 0u64;
+        let mut cancelled = false;
+        for ((id, path, _, size), r) in items.iter().zip(outcome) {
+            match r {
+                Ok(()) => {
+                    ok.push(*id);
+                    freed += size;
+                }
+                Err(e) if e == "cancelled" || e.contains("cancelled") => cancelled = true,
+                Err(e) => failed.push(format!("{}: {e}", path.display())),
+            }
         }
-    }
-    let mut freed = 0;
+        let _ = handle.emit("delete-progress", DeleteProgress { done: total, total, bytes: freed, total_bytes });
+        cancelled |= st.delete_cancel.load(Ordering::Relaxed);
+        (ok, failed, freed, cancelled)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
     {
         let mut g = state.tree.lock();
-        if let Some(t) = g.as_mut() {
+        // Ids belong to the tree the delete started on; a rescan meanwhile makes them meaningless
+        if let Some(t) = g.as_mut()
+            && state.generation.load(Ordering::Relaxed) == generation
+        {
             for id in &ok {
-                freed += t.nodes[*id as usize].size;
                 t.remove(*id);
             }
         }
     }
-    Ok(DeleteResult { freed, deleted: ok.len(), failed })
+    Ok(DeleteResult { freed, deleted: ok.len(), failed, cancelled })
+}
+
+#[derive(Serialize, Clone)]
+struct DeleteProgress {
+    done: usize,
+    total: usize,
+    bytes: u64,
+    total_bytes: u64,
+}
+
+/// Stop a running delete after the item in progress.
+#[tauri::command]
+fn cancel_delete(state: State<'_, AppState>) {
+    state.delete_cancel.store(true, Ordering::Relaxed);
 }
 
 fn is_protected(p: &std::path::Path) -> bool {
@@ -921,7 +1003,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
-            list_drives, scan, cancel_scan, get_node, get_ancestors, largest_files, find_junk, delete_nodes, reveal,
+            list_drives, scan, cancel_scan, get_node, get_ancestors, largest_files, find_junk, delete_nodes, cancel_delete, reveal,
             is_elevated, relaunch_as_admin, find_duplicates, cancel_duplicates, hardlink_dupes, history_list, history_diff,
             set_live_watch, get_summary, load_cached,
             opt_status, opt_apply_profile, opt_set_tweak, opt_set_power_plan, opt_restore, opt_startup_list, opt_startup_set,

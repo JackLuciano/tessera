@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import type { TreeNode } from './api';
   import { fmt, num, css, nodeName } from './api';
   import { t } from './i18n.svelte';
@@ -200,7 +201,10 @@
   }
 
   function resize() {
+    if (!wrap || !canvas) return;
     const dpr = devicePixelRatio || 1;
+    // Skip no-op calls (the window listener and the observer often fire for the same change)
+    if (wrap.clientWidth === W && wrap.clientHeight === H && canvas.width === Math.round(W * dpr)) return;
     W = wrap.clientWidth; H = wrap.clientHeight;
     canvas.width = W * dpr; canvas.height = H * dpr;
     build(); renderBase(); draw();
@@ -223,17 +227,24 @@
     } else if (moved && animated()) intro = performance.now();
     else renderBase();
     pendingZoom = null;
-    hover = null;
+    // Same folder refreshed: keep the highlight on the block under the cursor
+    const hid = untrack(() => hover?.node.id);
+    hover = moved || hid === undefined ? null : rects.find(r => r.node.id === hid) ?? null;
     requestAnimationFrame(draw);
   });
 
   $effect(() => {
+    // Size immediately, then follow both the container and the window: ResizeObserver alone can
+    // miss changes while the window isn't painting (minimized, restored, snapped)
+    resize();
     const ro = new ResizeObserver(resize);
     ro.observe(wrap);
+    const onWin = () => requestAnimationFrame(resize);
+    window.addEventListener('resize', onWin);
     // Redraw when the theme changes (colours are read from CSS variables)
     const mo = new MutationObserver(() => { renderBase(); draw(); });
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-    return () => { ro.disconnect(); mo.disconnect(); };
+    return () => { ro.disconnect(); mo.disconnect(); window.removeEventListener('resize', onWin); };
   });
 
   function hit(ev: MouseEvent): Rect | null {
