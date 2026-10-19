@@ -1,0 +1,244 @@
+//! Tray icon: open / Care scan / quit, a live CPU and memory readout (tooltip, menu line and an
+//! optional meter drawn into the icon), close-to-tray, and the notifications Care sends.
+
+use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+use tauri::image::Image;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Emitter, Manager, Wry};
+use tauri_plugin_notification::NotificationExt;
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
+pub struct Prefs {
+    /// The window's close button hides Tessera to the tray instead of quitting.
+    pub close_to_tray: bool,
+    /// Draw live CPU / memory bars into the tray icon.
+    pub tray_meter: bool,
+    /// "Still running in the tray" was shown once.
+    pub tray_hint_shown: bool,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self { close_to_tray: true, tray_meter: true, tray_hint_shown: false }
+    }
+}
+
+/// UI strings for the tray and notifications, sent by the frontend in the current language.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
+pub struct Labels {
+    pub open: String,
+    pub care: String,
+    pub quit: String,
+    pub cpu: String,
+    pub ram: String,
+    pub hidden_title: String,
+    pub hidden_body: String,
+    pub care_title: String,
+    /// {score} {size} {n}
+    pub care_body: String,
+    pub care_clean: String,
+    /// {size}
+    pub care_cleaned: String,
+}
+
+impl Default for Labels {
+    fn default() -> Self {
+        Self {
+            open: "Open Tessera".into(),
+            care: "Run Care scan".into(),
+            quit: "Quit".into(),
+            cpu: "CPU".into(),
+            ram: "RAM".into(),
+            hidden_title: "Tessera is still running".into(),
+            hidden_body: "It keeps working in the tray. Right-click the icon to quit.".into(),
+            care_title: "Tessera Care".into(),
+            care_body: "Health score {score}/100 · {size} to clean, {n} issues to fix".into(),
+            care_clean: "Health score {score}/100 · nothing to clean".into(),
+            care_cleaned: "Cleaned {size} automatically".into(),
+        }
+    }
+}
+
+pub struct TrayItems {
+    open: MenuItem<Wry>,
+    care: MenuItem<Wry>,
+    stats: MenuItem<Wry>,
+    quit: MenuItem<Wry>,
+}
+
+fn prefs_path(app: &AppHandle) -> Option<std::path::PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("prefs.json"))
+}
+
+pub fn load_prefs(app: &AppHandle) -> Prefs {
+    prefs_path(app).and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+pub fn save_prefs(app: &AppHandle, p: &Prefs) {
+    if let Some(path) = prefs_path(app) {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(path, serde_json::to_vec_pretty(p).unwrap_or_default());
+    }
+}
+
+/// Bring the main window back from the tray (or from being minimized).
+pub fn show_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+        let _ = app.emit("window-shown", ());
+    }
+}
+
+pub fn build(app: &AppHandle) -> tauri::Result<TrayItems> {
+    let l = Labels::default();
+    let items = TrayItems {
+        open: MenuItem::with_id(app, "open", &l.open, true, None::<&str>)?,
+        care: MenuItem::with_id(app, "care", &l.care, true, None::<&str>)?,
+        stats: MenuItem::with_id(app, "stats", "…", false, None::<&str>)?,
+        quit: MenuItem::with_id(app, "quit", &l.quit, true, None::<&str>)?,
+    };
+    let menu = Menu::with_items(
+        app,
+        &[&items.open, &items.care, &PredefinedMenuItem::separator(app)?, &items.stats, &PredefinedMenuItem::separator(app)?, &items.quit],
+    )?;
+    let mut builder = TrayIconBuilder::with_id("main")
+        .tooltip("Tessera")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, e| match e.id().as_ref() {
+            "open" => show_main(app),
+            "care" => crate::run_care_background(app, false),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, e| {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = e {
+                show_main(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+    Ok(items)
+}
+
+pub fn relabel(items: &TrayItems, l: &Labels) {
+    let _ = items.open.set_text(&l.open);
+    let _ = items.care.set_text(&l.care);
+    let _ = items.quit.set_text(&l.quit);
+}
+
+/// Refresh the tooltip, the stats line and (if enabled) the meter icon every two seconds.
+pub fn start_meter(app: AppHandle) {
+    std::thread::spawn(move || {
+        let mut sys = sysinfo::System::new();
+        let mut meter_was_on = false;
+        loop {
+            std::thread::sleep(Duration::from_secs(2));
+            sys.refresh_cpu_usage();
+            sys.refresh_memory();
+            let cpu = sys.global_cpu_usage().clamp(0.0, 100.0);
+            let ram = sys.used_memory() as f32 / sys.total_memory().max(1) as f32 * 100.0;
+            let st = app.state::<crate::AppState>();
+            let (cpu_l, ram_l) = {
+                let l = st.labels.lock();
+                (l.cpu.clone(), l.ram.clone())
+            };
+            let line = format!("{cpu_l} {cpu:.0}% · {ram_l} {ram:.0}%");
+            if let Some(items) = st.tray.lock().as_ref() {
+                let _ = items.stats.set_text(&line);
+            }
+            let Some(tray) = app.tray_by_id("main") else { continue };
+            let _ = tray.set_tooltip(Some(format!("Tessera · {line}")));
+            let meter = st.prefs.lock().tray_meter;
+            if meter {
+                let _ = tray.set_icon(Some(meter_icon(cpu, ram)));
+            } else if meter_was_on && let Some(icon) = app.default_window_icon() {
+                let _ = tray.set_icon(Some(icon.clone()));
+            }
+            meter_was_on = meter;
+        }
+    });
+}
+
+/// 32×32 icon: two bars (CPU, memory) on a dark rounded tile; a bar turns amber above 85%.
+pub fn meter_icon(cpu: f32, ram: f32) -> Image<'static> {
+    const S: usize = 32;
+    let mut px = vec![0u8; S * S * 4];
+    let mut put = |x: usize, y: usize, c: [u8; 4]| {
+        let i = (y * S + x) * 4;
+        px[i..i + 4].copy_from_slice(&c);
+    };
+    let r = 7.0f32;
+    for y in 0..S {
+        for x in 0..S {
+            // Rounded-square tile with a 1px soft edge
+            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+            let dx = (r - fx).max(fx - (S as f32 - r)).max(0.0);
+            let dy = (r - fy).max(fy - (S as f32 - r)).max(0.0);
+            let d = (dx * dx + dy * dy).sqrt();
+            let a = (r - d).clamp(0.0, 1.0);
+            if a > 0.0 {
+                put(x, y, [32, 28, 52, (a * 255.0) as u8]);
+            }
+        }
+    }
+    let bar = |put: &mut dyn FnMut(usize, usize, [u8; 4]), x0: usize, pct: f32, color: [u8; 4]| {
+        let (top, bottom) = (5usize, 27usize);
+        let h = bottom - top;
+        let filled = ((pct / 100.0) * h as f32).round().clamp(1.0, h as f32) as usize;
+        for y in top..bottom {
+            for x in x0..x0 + 8 {
+                let on = y >= bottom - filled;
+                put(x, y, if on { color } else { [255, 255, 255, 38] });
+            }
+        }
+    };
+    let warn = [251, 191, 36, 255];
+    bar(&mut put, 6, cpu, if cpu > 85.0 { warn } else { [167, 139, 250, 255] });
+    bar(&mut put, 18, ram, if ram > 85.0 { warn } else { [103, 232, 249, 255] });
+    Image::new_owned(px, S as u32, S as u32)
+}
+
+pub fn notify(app: &AppHandle, title: &str, body: &str) {
+    if let Err(e) = app.notification().builder().title(title).body(body).show() {
+        eprintln!("notification failed: {e}");
+    }
+}
+
+/// Window close: hide to the tray when that's the setting; tell the user the first time.
+pub fn on_close(app: &AppHandle) -> bool {
+    let st = app.state::<crate::AppState>();
+    let mut prefs = st.prefs.lock().clone();
+    if !prefs.close_to_tray || app.tray_by_id("main").is_none() {
+        return false;
+    }
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.hide();
+    }
+    if !prefs.tray_hint_shown {
+        prefs.tray_hint_shown = true;
+        *st.prefs.lock() = prefs.clone();
+        save_prefs(app, &prefs);
+        let l = st.labels.lock().clone();
+        notify(app, &l.hidden_title, &l.hidden_body);
+    }
+    true
+}
+
+/// Set while a Care scan runs in the background, so tray clicks and schedules don't stack up.
+pub static CARE_RUNNING: AtomicBool = AtomicBool::new(false);
+
+pub fn care_running() -> bool {
+    CARE_RUNNING.load(Ordering::Relaxed)
+}

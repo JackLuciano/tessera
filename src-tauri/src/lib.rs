@@ -1,13 +1,29 @@
 mod cache;
+mod care;
 mod delete;
+mod diskhealth;
 mod dupes;
 mod history;
+#[cfg(windows)]
+mod internet;
+mod junk;
 #[cfg(windows)]
 mod mft;
 #[cfg(windows)]
 mod optimizer;
+mod privacy;
+#[cfg(windows)]
+mod programs;
+#[cfg(windows)]
+mod registry;
 mod scanner;
+mod shortcuts;
+mod shred;
+mod sysutil;
+mod tray;
 mod watch;
+#[cfg(windows)]
+mod winget;
 
 use parking_lot::Mutex;
 use scanner::{Cat, Kind, Progress, Tree, CAT_COUNT, NO_PARENT};
@@ -18,7 +34,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-struct AppState {
+pub(crate) struct AppState {
     tree: Mutex<Option<Tree>>,
     progress: Mutex<Option<Arc<Progress>>>,
     dup_progress: Mutex<Option<Arc<dupes::DupProgress>>>,
@@ -29,6 +45,11 @@ struct AppState {
     /// Kept between calls: CPU usage is measured as the difference between two refreshes.
     sys: Mutex<sysinfo::System>,
     delete_cancel: AtomicBool,
+    pub(crate) prefs: Mutex<tray::Prefs>,
+    pub(crate) labels: Mutex<tray::Labels>,
+    pub(crate) tray: Mutex<Option<tray::TrayItems>>,
+    /// Started by a scheduled Care run (`--care`): the window stays hidden until opened.
+    hidden_start: AtomicBool,
 }
 
 impl Default for AppState {
@@ -42,6 +63,10 @@ impl Default for AppState {
             generation: AtomicU64::new(0),
             sys: Mutex::new(sysinfo::System::new()),
             delete_cancel: AtomicBool::new(false),
+            prefs: Mutex::default(),
+            labels: Mutex::default(),
+            tray: Mutex::default(),
+            hidden_start: AtomicBool::new(false),
         }
     }
 }
@@ -555,7 +580,12 @@ async fn opt_apply_profile(profile: String, app: AppHandle) -> OptResult {
     #[cfg(windows)]
     {
         let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
-        tauri::async_runtime::spawn_blocking(move || optimizer::apply_profile(&base, &profile, mft::is_elevated())).await.map_err(|e| e.to_string())?
+        tauri::async_runtime::spawn_blocking(move || {
+            restore_point_for(&app, "Tessera optimizer profile");
+            optimizer::apply_profile(&base, &profile, mft::is_elevated())
+        })
+        .await
+        .map_err(|e| e.to_string())?
     }
     #[cfg(not(windows))]
     {
@@ -569,7 +599,12 @@ async fn opt_set_tweak(key: String, on: bool, app: AppHandle) -> OptResult {
     #[cfg(windows)]
     {
         let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
-        tauri::async_runtime::spawn_blocking(move || optimizer::set_tweak(&base, &key, on)).await.map_err(|e| e.to_string())?
+        tauri::async_runtime::spawn_blocking(move || {
+            restore_point_for(&app, "Tessera optimizer tweak");
+            optimizer::set_tweak(&base, &key, on)
+        })
+        .await
+        .map_err(|e| e.to_string())?
     }
     #[cfg(not(windows))]
     {
@@ -857,9 +892,10 @@ struct DeleteResult {
     cancelled: bool,
 }
 
-/// Delete nodes by id. `permanent` skips the Recycle Bin / Trash.
+/// Delete nodes by id. `permanent` skips the Recycle Bin / Trash; `shred` overwrites files first.
 #[tauri::command]
-async fn delete_nodes(ids: Vec<u32>, permanent: bool, app: AppHandle, state: State<'_, AppState>) -> Result<DeleteResult, String> {
+async fn delete_nodes(ids: Vec<u32>, permanent: bool, shred: Option<bool>, app: AppHandle, state: State<'_, AppState>) -> Result<DeleteResult, String> {
+    let shred = shred.unwrap_or(false);
     let (targets, generation): (Vec<(u32, PathBuf, Kind, u64)>, u64) = {
         let g = state.tree.lock();
         let t = g.as_ref().ok_or("no scan yet")?;
@@ -913,7 +949,14 @@ async fn delete_nodes(ids: Vec<u32>, permanent: bool, app: AppHandle, state: Sta
         };
 
         let jobs: Vec<(PathBuf, bool, u64)> = items.iter().map(|i| (i.1.clone(), i.2, i.3)).collect();
-        let outcome = if permanent { delete::permanent_all(&jobs, &progress) } else { delete::trash_all(&jobs, &progress) };
+        let outcome = if shred {
+            let paths: Vec<PathBuf> = jobs.iter().map(|j| j.0.clone()).collect();
+            shred::shred_all(&paths, 1, &progress).into_iter().map(|r| r.map(|_| ())).collect()
+        } else if permanent {
+            delete::permanent_all(&jobs, &progress)
+        } else {
+            delete::trash_all(&jobs, &progress)
+        };
         finished.store(true, Ordering::Relaxed);
         let _ = ticker.join();
 
@@ -965,6 +1008,557 @@ fn cancel_delete(state: State<'_, AppState>) {
     state.delete_cancel.store(true, Ordering::Relaxed);
 }
 
+// ---------- system tools (Care, cleaners, uninstaller, updater, internet, disk health) ----------
+
+fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path().app_data_dir().map_err(|e| e.to_string())
+}
+
+/// Run blocking work off the async runtime.
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+const WINDOWS_ONLY: &str = "only available on Windows";
+
+/// Create a restore point before a system change, telling the UI first (it can take a while).
+fn restore_point_for(app: &AppHandle, what: &str) -> sysutil::RestorePoint {
+    #[cfg(windows)]
+    if mft::is_elevated() {
+        let _ = app.emit("restore-point", "creating");
+    }
+    #[cfg(not(windows))]
+    let _ = app;
+    sysutil::restore_point(what)
+}
+
+#[tauri::command]
+async fn junk_scan() -> Result<Vec<junk::JunkItem>, String> {
+    blocking(junk::scan).await
+}
+
+#[tauri::command]
+async fn junk_clean(keys: Vec<String>) -> Result<junk::CleanOutcome, String> {
+    blocking(move || junk::clean(&keys)).await
+}
+
+#[tauri::command]
+async fn privacy_scan() -> Result<Vec<privacy::PrivacyItem>, String> {
+    blocking(privacy::scan).await
+}
+
+#[tauri::command]
+async fn privacy_clean(ids: Vec<String>) -> Result<privacy::PrivacyOutcome, String> {
+    blocking(move || privacy::clean(&ids)).await
+}
+
+#[tauri::command]
+async fn shortcuts_scan() -> Result<Vec<shortcuts::BrokenShortcut>, String> {
+    blocking(shortcuts::find_broken).await
+}
+
+#[derive(Serialize)]
+struct CountOutcome {
+    fixed: usize,
+    failed: Vec<String>,
+}
+
+#[tauri::command]
+async fn shortcuts_fix(paths: Vec<String>) -> Result<CountOutcome, String> {
+    blocking(move || {
+        let (fixed, failed) = shortcuts::remove(&paths);
+        CountOutcome { fixed, failed }
+    })
+    .await
+}
+
+/// Empty folders in the scanned tree (needs a scan).
+#[tauri::command]
+fn empty_folders(state: State<'_, AppState>) -> Result<Vec<shortcuts::EmptyFolder>, String> {
+    let g = state.tree.lock();
+    let t = g.as_ref().ok_or("no scan yet")?;
+    Ok(shortcuts::empty_folders(t, 2000))
+}
+
+#[tauri::command]
+async fn shred_inspect(paths: Vec<String>) -> Result<Vec<shred::ShredTarget>, String> {
+    blocking(move || shred::inspect(&paths)).await
+}
+
+/// Shred files and folders picked in the Shredder (paths from the file dialog or drag and drop).
+#[tauri::command]
+async fn shred_paths(paths: Vec<String>, passes: u8, app: AppHandle, state: State<'_, AppState>) -> Result<DeleteResult, String> {
+    state.delete_cancel.store(false, Ordering::Relaxed);
+    let handle = app.clone();
+    let res = blocking(move || {
+        let targets: Vec<PathBuf> = paths.iter().map(PathBuf::from).filter(|p| !is_protected(p)).collect();
+        let info = shred::inspect(&paths);
+        let total = targets.len();
+        let total_bytes: u64 = info.iter().map(|i| i.size).sum();
+        let progress = Arc::new(delete::Progress::new());
+        let finished = Arc::new(AtomicBool::new(false));
+        let ticker = {
+            let (p, fin, h) = (progress.clone(), finished.clone(), handle.clone());
+            std::thread::spawn(move || {
+                while !fin.load(Ordering::Relaxed) {
+                    if h.state::<AppState>().delete_cancel.load(Ordering::Relaxed) {
+                        p.cancel.store(true, Ordering::Relaxed);
+                    }
+                    let _ = h.emit("delete-progress", DeleteProgress { done: p.done.load(Ordering::Relaxed), total, bytes: p.bytes.load(Ordering::Relaxed).min(total_bytes), total_bytes });
+                    std::thread::sleep(Duration::from_millis(120));
+                }
+            })
+        };
+        let results = shred::shred_all(&targets, passes.clamp(1, 3), &progress);
+        finished.store(true, Ordering::Relaxed);
+        let _ = ticker.join();
+        let mut out = DeleteResult { freed: 0, deleted: 0, failed: vec![], cancelled: false };
+        out.failed.extend(paths.iter().filter(|p| is_protected(std::path::Path::new(p))).map(|p| format!("{p}: protected system location")));
+        for (p, r) in targets.iter().zip(results) {
+            match r {
+                Ok(n) => {
+                    out.freed += n;
+                    out.deleted += 1;
+                }
+                Err(e) if e == "cancelled" => out.cancelled = true,
+                Err(e) => out.failed.push(format!("{}: {e}", p.display())),
+            }
+        }
+        out
+    })
+    .await?;
+    Ok(res)
+}
+
+#[tauri::command]
+async fn disk_health() -> Result<diskhealth::HealthReport, String> {
+    blocking(diskhealth::report).await
+}
+
+#[tauri::command]
+async fn disk_optimize(volume: String) -> Result<String, String> {
+    blocking(move || diskhealth::optimize(&volume)).await?
+}
+
+#[cfg(windows)]
+#[derive(Serialize)]
+struct RegistryFix {
+    #[serde(flatten)]
+    out: registry::FixOutcome,
+    restore_point: sysutil::RestorePoint,
+}
+
+#[tauri::command]
+#[cfg(windows)]
+async fn registry_scan() -> Result<Vec<registry::Issue>, String> {
+    blocking(registry::scan).await
+}
+#[tauri::command]
+#[cfg(not(windows))]
+async fn registry_scan() -> Result<Vec<()>, String> {
+    Ok(Vec::new())
+}
+
+#[tauri::command]
+#[cfg(windows)]
+async fn registry_fix(ids: Vec<String>, app: AppHandle) -> Result<RegistryFix, String> {
+    let base = data_dir(&app)?;
+    blocking(move || {
+        let restore_point = restore_point_for(&app, "Tessera registry cleanup");
+        registry::fix(&base, &ids).map(|out| RegistryFix { out, restore_point })
+    })
+    .await?
+}
+#[tauri::command]
+#[cfg(not(windows))]
+async fn registry_fix(ids: Vec<String>) -> Result<(), String> {
+    let _ = ids;
+    Err(WINDOWS_ONLY.into())
+}
+
+#[tauri::command]
+#[cfg(windows)]
+fn registry_backups(app: AppHandle) -> Result<Vec<registry::BackupInfo>, String> {
+    Ok(registry::backups(&data_dir(&app)?))
+}
+#[tauri::command]
+#[cfg(not(windows))]
+fn registry_backups() -> Vec<()> {
+    Vec::new()
+}
+
+#[tauri::command]
+#[cfg(windows)]
+async fn registry_undo(name: String, app: AppHandle) -> Result<usize, String> {
+    let base = data_dir(&app)?;
+    blocking(move || registry::undo(&base, &name)).await?
+}
+#[tauri::command]
+#[cfg(not(windows))]
+async fn registry_undo(name: String) -> Result<usize, String> {
+    let _ = name;
+    Err(WINDOWS_ONLY.into())
+}
+
+#[tauri::command]
+#[cfg(windows)]
+async fn programs_list() -> Result<Vec<programs::Program>, String> {
+    blocking(programs::list).await
+}
+#[tauri::command]
+#[cfg(not(windows))]
+async fn programs_list() -> Result<Vec<()>, String> {
+    Ok(Vec::new())
+}
+
+/// Run a program's uninstaller and wait for it; true when its entry is gone afterwards.
+#[tauri::command]
+#[cfg(windows)]
+async fn program_uninstall(id: String) -> Result<bool, String> {
+    blocking(move || programs::uninstall(&id)).await?
+}
+#[tauri::command]
+#[cfg(not(windows))]
+async fn program_uninstall(id: String) -> Result<bool, String> {
+    let _ = id;
+    Err(WINDOWS_ONLY.into())
+}
+
+#[tauri::command]
+#[cfg(windows)]
+async fn program_leftovers(program: programs::Program) -> Result<Vec<programs::Leftover>, String> {
+    blocking(move || programs::leftovers(&program)).await
+}
+#[tauri::command]
+#[cfg(not(windows))]
+async fn program_leftovers(program: serde_json::Value) -> Result<Vec<()>, String> {
+    let _ = program;
+    Ok(Vec::new())
+}
+
+#[cfg(windows)]
+#[derive(Serialize)]
+struct LeftoverFix {
+    #[serde(flatten)]
+    out: programs::LeftoverOutcome,
+    restore_point: Option<sysutil::RestorePoint>,
+}
+
+#[tauri::command]
+#[cfg(windows)]
+async fn leftovers_remove(items: Vec<programs::Leftover>, app: AppHandle) -> Result<LeftoverFix, String> {
+    let base = data_dir(&app)?;
+    blocking(move || {
+        let restore_point = items.iter().any(|l| l.kind == "registry").then(|| restore_point_for(&app, "Tessera uninstall leftovers"));
+        LeftoverFix { out: programs::remove_leftovers(&base, &items), restore_point }
+    })
+    .await
+}
+#[tauri::command]
+#[cfg(not(windows))]
+async fn leftovers_remove(items: Vec<serde_json::Value>) -> Result<(), String> {
+    let _ = items;
+    Err(WINDOWS_ONLY.into())
+}
+
+#[derive(Serialize)]
+struct UpdatesList {
+    /// winget is installed.
+    available: bool,
+    #[cfg(windows)]
+    items: Vec<winget::Upgrade>,
+    #[cfg(not(windows))]
+    items: Vec<()>,
+}
+
+#[tauri::command]
+async fn updates_list() -> Result<UpdatesList, String> {
+    #[cfg(windows)]
+    {
+        blocking(|| {
+            if !winget::available() {
+                return Ok(UpdatesList { available: false, items: vec![] });
+            }
+            winget::list().map(|items| UpdatesList { available: true, items })
+        })
+        .await?
+    }
+    #[cfg(not(windows))]
+    Ok(UpdatesList { available: false, items: vec![] })
+}
+
+#[tauri::command]
+async fn update_install(id: String) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        blocking(move || winget::upgrade(&id)).await?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = id;
+        Err(WINDOWS_ONLY.into())
+    }
+}
+
+#[cfg(windows)]
+#[derive(Serialize)]
+struct NetStatus {
+    adapters: Vec<internet::Adapter>,
+    tcp: Vec<internet::TcpSetting>,
+    has_backup: bool,
+    elevated: bool,
+}
+
+#[tauri::command]
+#[cfg(windows)]
+async fn net_status(app: AppHandle) -> Result<NetStatus, String> {
+    let base = data_dir(&app)?;
+    blocking(move || {
+        Ok(NetStatus { adapters: internet::adapters()?, tcp: internet::tcp_settings().unwrap_or_default(), has_backup: internet::has_backup(&base), elevated: mft::is_elevated() })
+    })
+    .await?
+}
+#[tauri::command]
+#[cfg(not(windows))]
+async fn net_status() -> Result<(), String> {
+    Err(WINDOWS_ONLY.into())
+}
+
+#[tauri::command]
+#[cfg(windows)]
+async fn net_set_dns(preset: String, app: AppHandle) -> Result<usize, String> {
+    let base = data_dir(&app)?;
+    blocking(move || {
+        restore_point_for(&app, "Tessera DNS change");
+        internet::set_dns(&base, &preset)
+    })
+    .await?
+}
+#[tauri::command]
+#[cfg(not(windows))]
+async fn net_set_dns(preset: String) -> Result<usize, String> {
+    let _ = preset;
+    Err(WINDOWS_ONLY.into())
+}
+
+#[tauri::command]
+#[cfg(windows)]
+async fn net_latency(current: Option<String>) -> Result<Vec<internet::Latency>, String> {
+    blocking(move || internet::latency(current)).await
+}
+#[tauri::command]
+#[cfg(not(windows))]
+async fn net_latency(current: Option<String>) -> Result<Vec<()>, String> {
+    let _ = current;
+    Ok(Vec::new())
+}
+
+#[tauri::command]
+async fn net_flush() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        blocking(internet::flush_dns).await?
+    }
+    #[cfg(not(windows))]
+    Err(WINDOWS_ONLY.into())
+}
+
+#[tauri::command]
+#[cfg(windows)]
+async fn net_set_tcp(key: String, on: bool, app: AppHandle) -> Result<(), String> {
+    let base = data_dir(&app)?;
+    blocking(move || {
+        restore_point_for(&app, "Tessera network settings");
+        internet::set_tcp(&base, &key, on)
+    })
+    .await?
+}
+#[tauri::command]
+#[cfg(not(windows))]
+async fn net_set_tcp(key: String, on: bool) -> Result<(), String> {
+    let _ = (key, on);
+    Err(WINDOWS_ONLY.into())
+}
+
+#[tauri::command]
+async fn net_restore(app: AppHandle) -> Result<usize, String> {
+    #[cfg(windows)]
+    {
+        let base = data_dir(&app)?;
+        blocking(move || internet::restore(&base)).await?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Err(WINDOWS_ONLY.into())
+    }
+}
+
+#[tauri::command]
+async fn net_repair() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        blocking(internet::repair).await?
+    }
+    #[cfg(not(windows))]
+    Err(WINDOWS_ONLY.into())
+}
+
+// ---------- Care ----------
+
+#[derive(Serialize)]
+struct CareState {
+    #[serde(flatten)]
+    config: care::CareConfig,
+    /// A scan started from the tray or the schedule is running right now.
+    running: bool,
+    /// Scheduling is available (Windows Task Scheduler).
+    can_schedule: bool,
+}
+
+#[tauri::command]
+fn care_config(app: AppHandle) -> Result<CareState, String> {
+    Ok(CareState { config: care::load_config(&data_dir(&app)?), running: tray::care_running(), can_schedule: cfg!(windows) })
+}
+
+/// Save Care settings; the schedule is (re)registered with Task Scheduler.
+#[tauri::command]
+async fn care_set_config(config: care::CareConfig, app: AppHandle) -> Result<(), String> {
+    let base = data_dir(&app)?;
+    blocking(move || {
+        let mut c = care::load_config(&base);
+        let schedule_changed = c.schedule != config.schedule || c.time != config.time;
+        c.modules = config.modules;
+        c.privacy_kinds = config.privacy_kinds;
+        c.auto_clean = config.auto_clean;
+        c.schedule = config.schedule;
+        c.time = config.time;
+        if schedule_changed {
+            care::apply_schedule(&c)?;
+        }
+        care::save_config(&base, &c)
+    })
+    .await?
+}
+
+#[derive(Serialize, Clone)]
+struct CareScan {
+    #[serde(flatten)]
+    report: care::CareReport,
+    plan: care::FixPlan,
+}
+
+#[tauri::command]
+async fn care_scan(app: AppHandle) -> Result<CareScan, String> {
+    let base = data_dir(&app)?;
+    blocking(move || {
+        let cfg = care::load_config(&base);
+        let report = care::scan(&cfg);
+        care::remember(&base, &report);
+        let plan = care::default_plan(&report, &cfg);
+        CareScan { report, plan }
+    })
+    .await
+}
+
+#[tauri::command]
+async fn care_fix(plan: care::FixPlan, app: AppHandle) -> Result<care::FixOutcome, String> {
+    let base = data_dir(&app)?;
+    blocking(move || {
+        if !plan.registry.is_empty() {
+            let _ = restore_point_for(&app, "Tessera Care");
+        }
+        care::fix(&base, &plan)
+    })
+    .await
+}
+
+/// "1.4 GB", same units as the UI.
+fn fmt_bytes(b: u64) -> String {
+    let units = ["B", "KB", "MB", "GB", "TB"];
+    let (mut v, mut i) = (b as f64, 0);
+    while v >= 1024.0 && i < units.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if v >= 100.0 || i == 0 { format!("{v:.0} {}", units[i]) } else { format!("{v:.1} {}", units[i]) }
+}
+
+/// Care in the background (tray menu, or `--care` from the schedule): scan, optionally clean the
+/// safe part, remember the result, tell the UI and send a notification.
+pub(crate) fn run_care_background(app: &AppHandle, scheduled: bool) {
+    if tray::CARE_RUNNING.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let Ok(base) = data_dir(&app) else {
+            tray::CARE_RUNNING.store(false, Ordering::Relaxed);
+            return;
+        };
+        let _ = app.emit("care-started", ());
+        let cfg = care::load_config(&base);
+        let mut report = care::scan(&cfg);
+        let st = app.state::<AppState>();
+        let labels = st.labels.lock().clone();
+        let body = if scheduled && cfg.auto_clean && report.fixable_bytes > 0 {
+            // Unattended runs never touch the registry or shortcuts: only junk and privacy items
+            let full = care::default_plan(&report, &cfg);
+            let out = care::fix(&base, &care::FixPlan { junk: full.junk, privacy: full.privacy, ..Default::default() });
+            report = care::scan(&cfg);
+            labels.care_cleaned.replace("{size}", &fmt_bytes(out.freed))
+        } else if report.fixable_bytes == 0 && report.fixable_issues == 0 {
+            labels.care_clean.replace("{score}", &report.score.to_string())
+        } else {
+            labels.care_body.replace("{score}", &report.score.to_string()).replace("{size}", &fmt_bytes(report.fixable_bytes)).replace("{n}", &report.fixable_issues.to_string())
+        };
+        care::remember(&base, &report);
+        let plan = care::default_plan(&report, &cfg);
+        let _ = app.emit("care-report", CareScan { report, plan });
+        tray::notify(&app, &labels.care_title, &body);
+        tray::CARE_RUNNING.store(false, Ordering::Relaxed);
+        // A scheduled run that started hidden ends here unless Tessera is meant to stay in the tray
+        let visible = app.get_webview_window("main").and_then(|w| w.is_visible().ok()).unwrap_or(false);
+        if scheduled && st.hidden_start.load(Ordering::Relaxed) && !visible && !st.prefs.lock().close_to_tray {
+            std::thread::sleep(Duration::from_secs(3));
+            app.exit(0);
+        }
+    });
+}
+
+#[tauri::command]
+fn prefs_get(state: State<'_, AppState>) -> tray::Prefs {
+    state.prefs.lock().clone()
+}
+
+#[tauri::command]
+fn prefs_set(prefs: tray::Prefs, app: AppHandle, state: State<'_, AppState>) {
+    *state.prefs.lock() = prefs.clone();
+    tray::save_prefs(&app, &prefs);
+}
+
+/// Tray menu and notification texts in the UI language.
+#[tauri::command]
+fn tray_labels(labels: tray::Labels, state: State<'_, AppState>) {
+    if let Some(items) = state.tray.lock().as_ref() {
+        tray::relabel(items, &labels);
+    }
+    *state.labels.lock() = labels;
+}
+
+#[derive(Serialize)]
+struct LaunchState {
+    /// Started hidden by a scheduled Care run; the window hasn't been opened yet.
+    hidden: bool,
+}
+
+#[tauri::command]
+fn launch_state(app: AppHandle, state: State<'_, AppState>) -> LaunchState {
+    let visible = app.get_webview_window("main").and_then(|w| w.is_visible().ok()).unwrap_or(true);
+    LaunchState { hidden: state.hidden_start.load(Ordering::Relaxed) && !visible }
+}
+
 fn is_protected(p: &std::path::Path) -> bool {
     let s = p.to_string_lossy().to_lowercase().replace('/', "\\");
     let roots = ["c:\\windows", "c:\\program files", "c:\\program files (x86)", "c:\\programdata\\microsoft"];
@@ -973,6 +1567,33 @@ fn is_protected(p: &std::path::Path) -> bool {
         || files.iter().any(|f| s.ends_with(f))
         || s.len() <= 3
         || s == "/" || s.starts_with("/system") || s.starts_with("/usr") || s.starts_with("/bin")
+}
+
+/// For tools that may work *inside* Program Files and AppData (uninstall leftovers): those folders
+/// themselves, the user profile, Windows and Microsoft's own areas stay off limits.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_protected_strict(p: &std::path::Path) -> bool {
+    let norm = |s: &str| s.to_lowercase().replace('/', "\\").trim_end_matches('\\').to_string();
+    let s = norm(&p.to_string_lossy());
+    let var = |v: &str| sysutil::env_path(v).map(|p| norm(&p.to_string_lossy()));
+    let exact: Vec<String> = ["ProgramFiles", "ProgramFiles(x86)", "ProgramData", "APPDATA", "LOCALAPPDATA", "USERPROFILE", "PUBLIC"]
+        .iter()
+        .filter_map(|v| var(v))
+        .chain(var("LOCALAPPDATA").map(|l| format!(r"{l}\programs")))
+        .collect();
+    let mut under: Vec<String> = vec![var("SystemRoot").unwrap_or_else(|| r"c:\windows".into())];
+    for (v, subs) in [
+        ("ProgramFiles", &["common files", "windowsapps", "windows defender", "windows nt", "windowspowershell", "internet explorer", "microsoft update health tools"][..]),
+        ("ProgramFiles(x86)", &["common files", "windows defender", "windows nt", "windowspowershell", "internet explorer", "microsoft"][..]),
+        ("ProgramData", &["microsoft", "packages"][..]),
+        ("LOCALAPPDATA", &["microsoft", "packages"][..]),
+        ("APPDATA", &["microsoft"][..]),
+    ] {
+        if let Some(base) = var(v) {
+            under.extend(subs.iter().map(|s| format!(r"{base}\{s}")));
+        }
+    }
+    s.len() <= 3 || exact.contains(&s) || under.iter().any(|u| s == *u || s.starts_with(&format!(r"{u}\")))
 }
 
 /// Show a file or folder selected in the OS file manager.
@@ -996,18 +1617,59 @@ fn reveal(path: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Scheduled Care runs start Tessera with --care: scan in the background, window stays hidden
+    let care_mode = std::env::args().any(|a| a == "--care");
     tauri::Builder::default()
+        // First: a second launch (Start menu, or the schedule) is handed to the running instance
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if args.iter().any(|a| a == "--care") {
+                run_care_background(app, true);
+            } else {
+                tray::show_main(app);
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(AppState::default())
+        .setup(move |app| {
+            let handle = app.handle().clone();
+            let st = handle.state::<AppState>();
+            *st.prefs.lock() = tray::load_prefs(&handle);
+            match tray::build(&handle) {
+                Ok(items) => *st.tray.lock() = Some(items),
+                Err(e) => eprintln!("tray icon unavailable: {e}"),
+            }
+            tray::start_meter(handle.clone());
+            if care_mode {
+                st.hidden_start.store(true, Ordering::Relaxed);
+                run_care_background(&handle, true);
+            } else if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+            }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event
+                && window.label() == "main"
+                && tray::on_close(window.app_handle())
+            {
+                api.prevent_close();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             list_drives, scan, cancel_scan, get_node, get_ancestors, largest_files, find_junk, delete_nodes, cancel_delete, reveal,
             is_elevated, relaunch_as_admin, find_duplicates, cancel_duplicates, hardlink_dupes, history_list, history_diff,
             set_live_watch, get_summary, load_cached,
             opt_status, opt_apply_profile, opt_set_tweak, opt_set_power_plan, opt_restore, opt_startup_list, opt_startup_set,
-            opt_processes, opt_kill, sys_stats
+            opt_processes, opt_kill, sys_stats,
+            junk_scan, junk_clean, privacy_scan, privacy_clean, shortcuts_scan, shortcuts_fix, empty_folders, shred_inspect, shred_paths,
+            disk_health, disk_optimize, registry_scan, registry_fix, registry_backups, registry_undo, programs_list, program_uninstall,
+            program_leftovers, leftovers_remove, updates_list, update_install, net_status, net_set_dns, net_latency, net_flush,
+            net_set_tcp, net_restore, net_repair, care_config, care_set_config, care_scan, care_fix, prefs_get, prefs_set, tray_labels,
+            launch_state
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

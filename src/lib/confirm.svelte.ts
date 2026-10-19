@@ -9,6 +9,8 @@ class ConfirmState {
   open = $state(false);
   items = $state<DeleteItem[]>([]);
   permanent = $state(false);
+  /** Permanent delete only: overwrite the files first so they can't be recovered. */
+  shred = $state(false);
   ack = $state(false);
   busy = $state(false);
   /** Live progress while deleting (null before the first update). */
@@ -24,6 +26,7 @@ class ConfirmState {
     if (!items.length) return;
     this.items = items;
     this.permanent = app.permanentDelete || !!ev?.shiftKey;
+    this.shred = false;
     this.ack = false;
     this.onDone = onDone ?? null;
     this.idsOverride = null;
@@ -40,7 +43,7 @@ class ConfirmState {
     const unlisten = await listen<DeleteProgress>('delete-progress', e => (this.progress = e.payload));
     try {
       const ids = this.idsOverride ?? this.items.map(i => i.id);
-      const res = await api.delete(ids, this.permanent);
+      const res = await api.delete(ids, this.permanent, this.permanent && this.shred);
       if (res.cancelled) app.toast(t('confirm.stopped', { size: fmt(res.freed) }), 'info');
       else if (res.deleted) app.toast(t(this.permanent ? 'toast.deletedPerm' : 'toast.recycled', { size: fmt(res.freed) }), this.permanent ? 'warning' : 'success');
       if (res.deleted) {

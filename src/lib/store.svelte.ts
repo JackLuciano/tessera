@@ -1,10 +1,15 @@
-import { api, type Drive, type ScanSummary, fmt } from './api';
+import { api, type Drive, type ScanSummary, type Prefs, fmt } from './api';
 import { listen } from '@tauri-apps/api/event';
 import { t } from './i18n.svelte';
 
-export type View = 'overview' | 'explorer' | 'cleanup' | 'files' | 'dupes' | 'history' | 'optimizer' | 'settings';
-/** The optimizer only exists on Windows (WebView2 reports it in the user agent). */
-export const IS_WINDOWS = typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent);
+export type View =
+  | 'care'
+  | 'overview' | 'explorer' | 'files' | 'dupes' | 'history'
+  | 'cleanup' | 'privacy' | 'registry' | 'shortcuts' | 'shredder'
+  | 'optimizer' | 'startup' | 'background' | 'internet'
+  | 'uninstaller' | 'updater' | 'health'
+  | 'settings';
+export { IS_WINDOWS } from './nav';
 type ToastKind = 'success' | 'info' | 'warning' | 'error';
 export interface Toast { id: number; msg: string; kind: ToastKind }
 
@@ -14,7 +19,7 @@ function load<T>(key: string, fallback: T): T {
 function save(key: string, v: unknown) { try { localStorage.setItem(key, JSON.stringify(v)); } catch {} }
 
 class AppStore {
-  view = $state<View>('overview');
+  view = $state<View>('care');
   drives = $state<Drive[]>([]);
   target = $state<string>(load('tessera-target', ''));
   summary = $state<ScanSummary | null>(null);
@@ -48,10 +53,17 @@ class AppStore {
   cachedAt = $state<number | null>(null);
   /** The backend is still checking what changed since the saved scan. */
   catchingUp = $state(false);
+  /** Tray and window behaviour, stored by the backend (it needs them while the window is hidden). */
+  prefs = $state<Prefs>({ close_to_tray: true, tray_meter: true, tray_hint_shown: false });
 
   get drive() { return this.drives.find(d => this.target.toUpperCase().startsWith(d.mount.toUpperCase())) ?? null; }
 
   async init() {
+    api.prefs().then(p => (this.prefs = p)).catch(() => {});
+    this.sendTrayLabels();
+    // Restore points can take half a minute; say why the button is still spinning
+    await listen<string>('restore-point', () => this.toast(t('rp.creating'), 'info'));
+    const launch = await api.launchState().catch(() => ({ hidden: false }));
     await listen<{ files: number; dirs: number; bytes: number }>('scan-progress', e => { this.progress = e.payload; });
     await listen<{ folders: number; delta: number; size: number; files: number }>('live-change', e => {
       if (!this.summary || this.scanning) return;
@@ -82,7 +94,22 @@ class AppStore {
     await this.refreshDrives();
     if (!this.target && this.drives.length) this.target = this.drives[0].mount;
     this.elevated = await api.isElevated().catch(() => false);
-    if (this.reopen && this.target) await this.openSaved(this.target);
+    if (!this.reopen || !this.target) return;
+    // Started hidden by a scheduled Care run: load the saved scan only once the window is opened
+    if (launch.hidden) {
+      const off = await listen('window-shown', () => { off(); this.openSaved(this.target); });
+    } else await this.openSaved(this.target);
+  }
+
+  setPrefs(p: Partial<Prefs>) {
+    this.prefs = { ...this.prefs, ...p };
+    api.setPrefs(this.prefs).catch(e => this.toast(String(e), 'error'));
+  }
+
+  /** Tray menu and notification texts follow the UI language. */
+  sendTrayLabels() {
+    const keys = ['open', 'care', 'quit', 'cpu', 'ram', 'hidden_title', 'hidden_body', 'care_title', 'care_body', 'care_clean', 'care_cleaned'];
+    api.trayLabels(Object.fromEntries(keys.map(k => [k, t('tray.' + k)]))).catch(() => {});
   }
 
   /** Switch to a drive: its saved scan if there is one (and reopening is on), otherwise a new scan. */

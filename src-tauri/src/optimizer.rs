@@ -474,8 +474,17 @@ const RUN32: &str = r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run"
 const APPROVED: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
 const APPROVED32: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run32";
 
+const APPROVED_FOLDER: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder";
+
 /// (id prefix, hive is HKLM?, Run key, matching StartupApproved key)
 const SOURCES: &[(&str, bool, &str, &str)] = &[("hkcu", false, RUN, APPROVED), ("hklm", true, RUN, APPROVED), ("hklm32", true, RUN32, APPROVED32)];
+/// Startup folders: (id prefix, all users?, base folder variable). Their StartupApproved values are
+/// named after the shortcut file.
+const FOLDERS: &[(&str, bool, &str)] = &[("folder", false, "APPDATA"), ("folder_all", true, "ProgramData")];
+
+fn startup_folder(var: &str) -> Option<std::path::PathBuf> {
+    crate::sysutil::env_path(var).map(|b| b.join(r"Microsoft\Windows\Start Menu\Programs\Startup"))
+}
 
 /// Same switch Task Manager's Startup tab flips: the first byte of the StartupApproved value is
 /// even when enabled and odd when disabled; a missing value means enabled.
@@ -501,13 +510,33 @@ pub fn startup_list() -> Vec<StartupApp> {
             });
         }
     }
+    for (prefix, machine, var) in FOLDERS {
+        let Some(dir) = startup_folder(var) else { continue };
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_file())) {
+            let file = e.file_name().to_string_lossy().into_owned();
+            if file.eq_ignore_ascii_case("desktop.ini") {
+                continue;
+            }
+            let command = std::fs::read(e.path()).ok().and_then(|b| crate::shortcuts::parse_lnk(&b)).unwrap_or_else(|| e.path().to_string_lossy().into_owned());
+            out.push(StartupApp {
+                id: format!("{prefix}:{file}"),
+                enabled: approved(*machine, APPROVED_FOLDER, &file),
+                name: std::path::Path::new(&file).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or(file.clone()),
+                command,
+                scope: if *machine { "machine" } else { "user" },
+            });
+        }
+    }
     out.sort_by_key(|a| a.name.to_lowercase());
     out
 }
 
 pub fn set_startup(id: &str, enabled: bool) -> Result<(), String> {
     let (prefix, name) = id.split_once(':').ok_or("bad id")?;
-    let (_, machine, _, appr) = SOURCES.iter().find(|s| s.0 == prefix).ok_or("bad id")?;
+    let folder = FOLDERS.iter().find(|f| f.0 == prefix).map(|f| (f.0, f.1, "", APPROVED_FOLDER));
+    let (_, machine, _, appr) = SOURCES.iter().copied().find(|s| s.0 == prefix).or(folder).ok_or("bad id")?;
+    let machine = &machine;
     let (k, _) = hive(*machine).create_subkey(appr).map_err(|e| format!("{name}: {e}"))?;
     let mut bytes = vec![0u8; 12];
     bytes[0] = if enabled { 2 } else { 3 };
