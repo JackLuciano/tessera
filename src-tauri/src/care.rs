@@ -224,6 +224,7 @@ pub fn remember(base: &Path, r: &CareReport) {
     c.last_found = r.fixable_bytes;
     c.last_issues = r.fixable_issues;
     let _ = save_config(base, &c);
+    crate::stats::record_care(base, r.score, r.fixable_bytes);
 }
 
 // ---------- schedule (Windows Task Scheduler) ----------

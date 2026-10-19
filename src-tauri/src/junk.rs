@@ -22,6 +22,9 @@ enum Target {
     Files(PathBuf, &'static str, &'static str),
     /// One file.
     File(PathBuf),
+    /// Big files directly in a folder, untouched for a long time (old downloads). These go to the
+    /// Recycle Bin, not straight to deletion.
+    OldLarge(PathBuf, u64, Duration),
     RecycleBin,
 }
 
@@ -53,8 +56,24 @@ pub struct CleanOutcome {
     pub failed: Vec<String>,
 }
 
+/// The user's Downloads folder (it can be moved, so Windows is asked first).
+fn downloads() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+        let k = RegKey::predef(HKEY_CURRENT_USER).open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders").ok();
+        if let Some(p) = k.and_then(|k| k.get_value::<String, _>("{374DE290-123F-4565-9164-39C4925E467B}").ok()) {
+            return Some(PathBuf::from(p));
+        }
+    }
+    home().map(|h| h.join("Downloads"))
+}
+
 fn rules() -> Vec<Rule> {
     let mut r = Vec::new();
+    if let Some(d) = downloads() {
+        r.push(Rule { key: "old_downloads", safe: false, admin: false, targets: vec![Target::OldLarge(d, 100 * 1024 * 1024, DAY * 180)] });
+    }
     #[cfg(windows)]
     {
         let local = env_path("LOCALAPPDATA");
@@ -138,6 +157,15 @@ fn entries(t: &Target) -> Vec<PathBuf> {
             })
             .unwrap_or_default(),
         Target::File(f) => if f.is_file() { vec![f.clone()] } else { vec![] },
+        Target::OldLarge(dir, min, age) => std::fs::read_dir(dir)
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| e.metadata().is_ok_and(|m| m.is_file() && m.len() >= *min))
+                    .map(|e| e.path())
+                    .filter(|p| old_enough(p, *age))
+                    .collect()
+            })
+            .unwrap_or_default(),
         Target::RecycleBin => vec![],
     }
 }
@@ -182,6 +210,19 @@ pub fn clean(keys: &[String]) -> CleanOutcome {
                         out.cleaned += 1;
                     }
                     Err(e) => out.failed.push(e),
+                }
+                continue;
+            }
+            if let Target::OldLarge(..) = t {
+                for e in entries(t) {
+                    let size = sysutil::size_of(&e);
+                    match trash::delete(&e) {
+                        Ok(()) => {
+                            out.freed += size;
+                            out.cleaned += 1;
+                        }
+                        Err(err) => out.failed.push(format!("{}: {err}", e.display())),
+                    }
                 }
                 continue;
             }

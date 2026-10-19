@@ -27,6 +27,11 @@ booster, drive health and a Windows optimizer with gaming, work and battery prof
 
 |   |   |
 |---|---|
+| 🎮 **Automatic game mode** | Notices when a game starts and asks (or just does it, per game): high-performance power plan, close the apps on *your* list (never the ones you keep), clear standby RAM, fine timer resolution, unparked cores, then everything back when you quit. Per-game CPU priority, GPU preference and fullscreen-optimization switches. |
+| 📚 **Game library** | Steam, Epic, GOG, Ubisoft, Xbox, EA, Battle.net, Riot and Rockstar games in one grid with covers, size, last played and playtime; clean leftovers of uninstalled games and old shader caches. |
+| 📈 **FPS & ping** | Frame rate, 1% / 0.1% lows and frame times through PresentMon (nothing injected into games) in a small always-on-top window, saved per session for before/after comparisons; live ping, jitter and packet loss. |
+| 🌡️ **Temperatures & throttling** | CPU / GPU temperature, clocks, power and fan without extra drivers, a throttling log, and an idle-temperature trend that tells you when the fans need cleaning. |
+| 🩹 **PC health** | Battery wear, crashes and blue screens in plain words, security checkup, boot time, GPU driver age, Windows Update helper, refresh-rate check, weekly report, desktop widget, global hotkeys and settings export. |
 | ❤️ **One-click Care** | One scan checks junk files, privacy traces, the registry, broken shortcuts, startup apps, drive health and software updates, gives a health score and fixes the safe part with one click — after showing you exactly what changes. Can run on a schedule (Windows Task Scheduler) and notify you from the tray. |
 | 🕵️ **Privacy sweep** | Browser caches, cookies, history and sessions (Chrome, Edge, Brave, Vivaldi, Opera, Firefox — Firefox bookmarks are kept), recent files, Run/Explorer history and the clipboard. Cookies and history are never picked by default. |
 | 🧾 **Careful registry cleaner** | Only entries that point to files that no longer exist (uninstall entries, app paths, startup commands, shared DLLs…). A Windows restore point plus Tessera's own backup before every fix, with one-click undo. |
@@ -181,7 +186,8 @@ for CI. Contributors without the key still get a working build — just without 
 - [x] Saved scans that open instantly and catch up via the NTFS USN journal
 - [x] Windows optimizer with switchable profiles
 - [x] One-click Care: privacy sweep, registry cleaner, uninstaller, updater, internet booster, drive health, shredder, tray
-- [ ] Per-game profiles that switch automatically when a game starts
+- [x] Automatic game mode with per-game settings, game library, FPS & ping, temperatures, PC health tools
+- [ ] Ideas for 0.4 live in the [issues](../../issues?q=label%3A%22planned%3A+0.4%22)
 - [ ] Even more languages — [help translate!](CONTRIBUTING.md#translations)
 
 ## 🤝 Contributing

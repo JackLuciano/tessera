@@ -19,11 +19,21 @@ pub struct Prefs {
     pub tray_meter: bool,
     /// "Still running in the tray" was shown once.
     pub tray_hint_shown: bool,
+    /// The floating desktop widget is open.
+    pub widget: bool,
+    /// The widget stays above other windows.
+    pub widget_on_top: bool,
+    pub hotkeys_enabled: bool,
+    /// Action → shortcut ("Ctrl+Shift+F"): fps, boost, care, widget.
+    pub hotkeys: std::collections::BTreeMap<String, String>,
+    /// Send the weekly summary notification.
+    pub weekly: bool,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Self { close_to_tray: true, tray_meter: true, tray_hint_shown: false }
+        let hotkeys = [("fps", "Ctrl+Shift+F"), ("boost", "Ctrl+Shift+B"), ("care", "Ctrl+Shift+C"), ("widget", "Ctrl+Shift+W")].iter().map(|(a, k)| (a.to_string(), k.to_string())).collect();
+        Self { close_to_tray: true, tray_meter: true, tray_hint_shown: false, widget: false, widget_on_top: true, hotkeys_enabled: true, hotkeys, weekly: true }
     }
 }
 
@@ -44,6 +54,13 @@ pub struct Labels {
     pub care_clean: String,
     /// {size}
     pub care_cleaned: String,
+    pub widget: String,
+    pub boost_title: String,
+    /// {game}
+    pub boost_body: String,
+    pub weekly_title: String,
+    /// {size} {games} {score}
+    pub weekly_body: String,
 }
 
 impl Default for Labels {
@@ -60,6 +77,11 @@ impl Default for Labels {
             care_body: "Health score {score}/100 · {size} to clean, {n} issues to fix".into(),
             care_clean: "Health score {score}/100 · nothing to clean".into(),
             care_cleaned: "Cleaned {size} automatically".into(),
+            widget: "Desktop widget".into(),
+            boost_title: "Game boost on".into(),
+            boost_body: "{game} is running with the boost settings".into(),
+            weekly_title: "Your week with Tessera".into(),
+            weekly_body: "{size} freed · {games} games played · health {score}".into(),
         }
     }
 }
@@ -67,6 +89,7 @@ impl Default for Labels {
 pub struct TrayItems {
     open: MenuItem<Wry>,
     care: MenuItem<Wry>,
+    widget: MenuItem<Wry>,
     stats: MenuItem<Wry>,
     quit: MenuItem<Wry>,
 }
@@ -103,12 +126,13 @@ pub fn build(app: &AppHandle) -> tauri::Result<TrayItems> {
     let items = TrayItems {
         open: MenuItem::with_id(app, "open", &l.open, true, None::<&str>)?,
         care: MenuItem::with_id(app, "care", &l.care, true, None::<&str>)?,
+        widget: MenuItem::with_id(app, "widget", &l.widget, true, None::<&str>)?,
         stats: MenuItem::with_id(app, "stats", "…", false, None::<&str>)?,
         quit: MenuItem::with_id(app, "quit", &l.quit, true, None::<&str>)?,
     };
     let menu = Menu::with_items(
         app,
-        &[&items.open, &items.care, &PredefinedMenuItem::separator(app)?, &items.stats, &PredefinedMenuItem::separator(app)?, &items.quit],
+        &[&items.open, &items.care, &items.widget, &PredefinedMenuItem::separator(app)?, &items.stats, &PredefinedMenuItem::separator(app)?, &items.quit],
     )?;
     let mut builder = TrayIconBuilder::with_id("main")
         .tooltip("Tessera")
@@ -117,6 +141,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<TrayItems> {
         .on_menu_event(|app, e| match e.id().as_ref() {
             "open" => show_main(app),
             "care" => crate::run_care_background(app, false),
+            "widget" => crate::toggle_widget(app),
             "quit" => app.exit(0),
             _ => {}
         })
@@ -135,6 +160,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<TrayItems> {
 pub fn relabel(items: &TrayItems, l: &Labels) {
     let _ = items.open.set_text(&l.open);
     let _ = items.care.set_text(&l.care);
+    let _ = items.widget.set_text(&l.widget);
     let _ = items.quit.set_text(&l.quit);
 }
 
@@ -234,6 +260,48 @@ pub fn on_close(app: &AppHandle) -> bool {
         notify(app, &l.hidden_title, &l.hidden_body);
     }
     true
+}
+
+/// A small frameless window (FPS window, desktop widget) in a corner of the primary screen.
+/// `left`: top-left corner, otherwise top-right. Opening an open window or closing a closed one
+/// does nothing.
+pub fn small_window(app: &AppHandle, label: &str, on: bool, w: f64, h: f64, left: bool, on_top: bool) {
+    if let Some(win) = app.get_webview_window(label) {
+        if on {
+            let _ = win.set_always_on_top(on_top);
+        } else {
+            let _ = win.close();
+        }
+        return;
+    }
+    if !on {
+        return;
+    }
+    let mut b = tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App(format!("index.html?window={label}").into()))
+        .title("Tessera")
+        .inner_size(w, h)
+        .decorations(false)
+        .resizable(false)
+        .always_on_top(on_top)
+        .skip_taskbar(true)
+        .focused(false)
+        .shadow(false);
+    // Transparent windows need Tauri's private-API feature on macOS; there the card is drawn on an
+    // opaque window instead
+    #[cfg(not(target_os = "macos"))]
+    {
+        b = b.transparent(true);
+    }
+    if let Ok(Some(m)) = app.primary_monitor() {
+        let scale = m.scale_factor();
+        let size = m.size().to_logical::<f64>(scale);
+        let pos = m.position().to_logical::<f64>(scale);
+        let x = if left { pos.x + 16.0 } else { pos.x + size.width - w - 16.0 };
+        b = b.position(x, pos.y + 16.0);
+    }
+    if let Err(e) = b.build() {
+        eprintln!("{label} window: {e}");
+    }
 }
 
 /// Set while a Care scan runs in the background, so tray clicks and schedules don't stack up.

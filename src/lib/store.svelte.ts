@@ -4,10 +4,12 @@ import { t } from './i18n.svelte';
 
 export type View =
   | 'care'
+  | 'gamemode' | 'library' | 'fps' | 'display'
   | 'overview' | 'explorer' | 'files' | 'dupes' | 'history'
   | 'cleanup' | 'privacy' | 'registry' | 'shortcuts' | 'shredder'
   | 'optimizer' | 'startup' | 'background' | 'internet'
-  | 'uninstaller' | 'updater' | 'health'
+  | 'temps' | 'health' | 'battery' | 'crashes' | 'security' | 'boot'
+  | 'uninstaller' | 'updater' | 'drivers' | 'winupdate' | 'report'
   | 'settings';
 export { IS_WINDOWS } from './nav';
 type ToastKind = 'success' | 'info' | 'warning' | 'error';
@@ -54,12 +56,16 @@ class AppStore {
   /** The backend is still checking what changed since the saved scan. */
   catchingUp = $state(false);
   /** Tray and window behaviour, stored by the backend (it needs them while the window is hidden). */
-  prefs = $state<Prefs>({ close_to_tray: true, tray_meter: true, tray_hint_shown: false });
+  prefs = $state<Prefs>({
+    close_to_tray: true, tray_meter: true, tray_hint_shown: false, widget: false, widget_on_top: true, hotkeys_enabled: true,
+    hotkeys: { fps: 'Ctrl+Shift+F', boost: 'Ctrl+Shift+B', care: 'Ctrl+Shift+C', widget: 'Ctrl+Shift+W' }, weekly: true,
+  });
 
   get drive() { return this.drives.find(d => this.target.toUpperCase().startsWith(d.mount.toUpperCase())) ?? null; }
 
   async init() {
-    api.prefs().then(p => (this.prefs = p)).catch(() => {});
+    // Merged over the defaults: prefs saved by an older version lack the newer fields
+    api.prefs().then(p => (this.prefs = { ...this.prefs, ...p, hotkeys: { ...this.prefs.hotkeys, ...(p?.hotkeys ?? {}) } })).catch(() => {});
     this.sendTrayLabels();
     // Restore points can take half a minute; say why the button is still spinning
     await listen<string>('restore-point', () => this.toast(t('rp.creating'), 'info'));
@@ -103,12 +109,14 @@ class AppStore {
 
   setPrefs(p: Partial<Prefs>) {
     this.prefs = { ...this.prefs, ...p };
-    api.setPrefs(this.prefs).catch(e => this.toast(String(e), 'error'));
+    api.setPrefs(this.prefs)
+      .then(failed => { if (failed?.length) this.toast(t('hotkeys.taken', { keys: failed.join(', ') }), 'warning'); })
+      .catch(e => this.toast(String(e), 'error'));
   }
 
   /** Tray menu and notification texts follow the UI language. */
   sendTrayLabels() {
-    const keys = ['open', 'care', 'quit', 'cpu', 'ram', 'hidden_title', 'hidden_body', 'care_title', 'care_body', 'care_clean', 'care_cleaned'];
+    const keys = ['open', 'care', 'quit', 'cpu', 'ram', 'hidden_title', 'hidden_body', 'care_title', 'care_body', 'care_clean', 'care_cleaned', 'widget', 'boost_title', 'boost_body', 'weekly_title', 'weekly_body'];
     api.trayLabels(Object.fromEntries(keys.map(k => [k, t('tray.' + k)]))).catch(() => {});
   }
 

@@ -2,23 +2,39 @@ mod cache;
 mod care;
 mod delete;
 mod diskhealth;
+#[cfg(windows)]
+mod display;
 mod dupes;
+#[cfg(windows)]
+mod fps;
+#[cfg(windows)]
+mod gamemode;
+#[cfg(windows)]
+mod games;
+mod health;
 mod history;
 #[cfg(windows)]
 mod internet;
 mod junk;
 #[cfg(windows)]
+mod memory;
+#[cfg(windows)]
 mod mft;
 #[cfg(windows)]
 mod optimizer;
+#[cfg(windows)]
+mod perf;
+mod ping;
 mod privacy;
 #[cfg(windows)]
 mod programs;
 #[cfg(windows)]
 mod registry;
 mod scanner;
+mod sensors;
 mod shortcuts;
 mod shred;
+mod stats;
 mod sysutil;
 mod tray;
 mod watch;
@@ -991,6 +1007,7 @@ async fn delete_nodes(ids: Vec<u32>, permanent: bool, shred: Option<bool>, app: 
             }
         }
     }
+    note_freed(&app, if shred { "shredder" } else { "files" }, freed);
     Ok(DeleteResult { freed, deleted: ok.len(), failed, cancelled })
 }
 
@@ -1038,9 +1055,18 @@ async fn junk_scan() -> Result<Vec<junk::JunkItem>, String> {
     blocking(junk::scan).await
 }
 
+/// Remember freed space for the weekly report.
+fn note_freed(app: &AppHandle, tool: &str, bytes: u64) {
+    if let Ok(base) = data_dir(app) {
+        stats::record_freed(&base, tool, bytes);
+    }
+}
+
 #[tauri::command]
-async fn junk_clean(keys: Vec<String>) -> Result<junk::CleanOutcome, String> {
-    blocking(move || junk::clean(&keys)).await
+async fn junk_clean(keys: Vec<String>, app: AppHandle) -> Result<junk::CleanOutcome, String> {
+    let out = blocking(move || junk::clean(&keys)).await?;
+    note_freed(&app, "junk", out.freed);
+    Ok(out)
 }
 
 #[tauri::command]
@@ -1049,8 +1075,10 @@ async fn privacy_scan() -> Result<Vec<privacy::PrivacyItem>, String> {
 }
 
 #[tauri::command]
-async fn privacy_clean(ids: Vec<String>) -> Result<privacy::PrivacyOutcome, String> {
-    blocking(move || privacy::clean(&ids)).await
+async fn privacy_clean(ids: Vec<String>, app: AppHandle) -> Result<privacy::PrivacyOutcome, String> {
+    let out = blocking(move || privacy::clean(&ids)).await?;
+    note_freed(&app, "privacy", out.freed);
+    Ok(out)
 }
 
 #[tauri::command]
@@ -1128,6 +1156,7 @@ async fn shred_paths(paths: Vec<String>, passes: u8, app: AppHandle, state: Stat
         out
     })
     .await?;
+    note_freed(&app, "shredder", res.freed);
     Ok(res)
 }
 
@@ -1251,7 +1280,9 @@ async fn leftovers_remove(items: Vec<programs::Leftover>, app: AppHandle) -> Res
     let base = data_dir(&app)?;
     blocking(move || {
         let restore_point = items.iter().any(|l| l.kind == "registry").then(|| restore_point_for(&app, "Tessera uninstall leftovers"));
-        LeftoverFix { out: programs::remove_leftovers(&base, &items), restore_point }
+        let out = programs::remove_leftovers(&base, &items);
+        stats::record_freed(&base, "uninstaller", out.freed);
+        LeftoverFix { out, restore_point }
     })
     .await
 }
@@ -1469,7 +1500,9 @@ async fn care_fix(plan: care::FixPlan, app: AppHandle) -> Result<care::FixOutcom
         if !plan.registry.is_empty() {
             let _ = restore_point_for(&app, "Tessera Care");
         }
-        care::fix(&base, &plan)
+        let out = care::fix(&base, &plan);
+        stats::record_freed(&base, "care", out.freed);
+        out
     })
     .await
 }
@@ -1527,15 +1560,465 @@ pub(crate) fn run_care_background(app: &AppHandle, scheduled: bool) {
     });
 }
 
+// ---------- 0.3: gaming, sensors, health, reports ----------
+
+#[tauri::command]
+fn sensors_now() -> Option<sensors::Snapshot> {
+    sensors::latest()
+}
+
+#[derive(Serialize)]
+struct SensorHistory {
+    history: Vec<sensors::Snapshot>,
+    throttle: Vec<sensors::ThrottleEvent>,
+    trend: sensors::TrendReport,
+}
+
+#[tauri::command]
+fn sensors_history() -> SensorHistory {
+    SensorHistory { history: sensors::history(), throttle: sensors::throttle_events(), trend: sensors::trend() }
+}
+
+#[tauri::command]
+fn ping_get(host: Option<String>) -> ping::PingState {
+    ping::get(host)
+}
+
+#[tauri::command]
+async fn ping_gateway() -> Result<Option<String>, String> {
+    blocking(ping::gateway).await
+}
+
+#[derive(Serialize)]
+struct BatteryInfo {
+    battery: health::Battery,
+    /// (time, full mWh, design mWh)
+    history: Vec<(u64, u64, u64)>,
+}
+
+#[tauri::command]
+async fn battery_info(app: AppHandle) -> Result<BatteryInfo, String> {
+    let base = data_dir(&app)?;
+    blocking(move || {
+        let battery = health::battery();
+        let history = health::battery_history(&base, &battery);
+        BatteryInfo { battery, history }
+    })
+    .await
+}
+
+#[tauri::command]
+fn stats_report(days: u64, app: AppHandle) -> Result<stats::Report, String> {
+    Ok(stats::report(&data_dir(&app)?, days.clamp(1, 90)))
+}
+
+/// Open or close the floating desktop widget (and remember it).
+pub(crate) fn toggle_widget(app: &AppHandle) {
+    let st = app.state::<AppState>();
+    let mut p = st.prefs.lock().clone();
+    p.widget = app.get_webview_window("widget").is_none();
+    *st.prefs.lock() = p.clone();
+    tray::save_prefs(app, &p);
+    tray::small_window(app, "widget", p.widget, 260.0, 196.0, false, p.widget_on_top);
+}
+
+#[tauri::command]
+fn widget_set(on: bool, app: AppHandle) {
+    let open = app.get_webview_window("widget").is_some();
+    if open != on {
+        toggle_widget(&app);
+    }
+}
+
+/// Register the global hotkeys from the prefs (replacing earlier ones). Returns shortcuts that
+/// could not be registered (taken by another app, or invalid).
+fn apply_hotkeys(app: &AppHandle) -> Vec<String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    let gs = app.global_shortcut();
+    let _ = gs.unregister_all();
+    let prefs = app.state::<AppState>().prefs.lock().clone();
+    if !prefs.hotkeys_enabled {
+        return Vec::new();
+    }
+    let mut failed = Vec::new();
+    for (action, keys) in prefs.hotkeys.iter().filter(|(_, k)| !k.trim().is_empty()) {
+        let action = action.clone();
+        let r = gs.on_shortcut(keys.as_str(), move |app, _shortcut, event| {
+            if event.state() != tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                return;
+            }
+            match action.as_str() {
+                "care" => run_care_background(app, false),
+                "widget" => toggle_widget(app),
+                #[cfg(windows)]
+                "fps" => {
+                    let open = fps::overlay_open(app);
+                    fps::show_overlay(app, !open);
+                }
+                #[cfg(windows)]
+                "boost" => {
+                    if let Err(e) = gamemode::boost_now(app) {
+                        let _ = app.emit("toast", e);
+                    }
+                }
+                _ => {}
+            }
+        });
+        if r.is_err() {
+            failed.push(keys.clone());
+        }
+    }
+    failed
+}
+
+/// Open a Windows Settings / Security page or a GPU vendor's driver page. Anything else is refused,
+/// so the UI can't be used to launch arbitrary programs.
+#[tauri::command]
+fn open_uri(uri: String) -> Result<(), String> {
+    const ALLOWED: &[&str] = &["ms-settings:", "windowsdefender:", "https://www.nvidia.com/", "https://www.amd.com/", "https://www.intel.com/"];
+    if !ALLOWED.iter().any(|p| uri.starts_with(p)) || uri.contains(['"', '&', '|', '^', '<', '>']) {
+        return Err("not allowed".into());
+    }
+    #[cfg(windows)]
+    {
+        sysutil::command("cmd").args(["/C", "start", "", &uri]).spawn().map(|_| ()).map_err(|e| e.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        sysutil::command(opener).arg(&uri).spawn().map(|_| ()).map_err(|e| e.to_string())
+    }
+}
+
+/// Settings bundle: the backend's config files plus the UI's own settings (passed in).
+#[tauri::command]
+fn settings_export(path: String, local: serde_json::Value, app: AppHandle) -> Result<(), String> {
+    let base = data_dir(&app)?;
+    let read = |f: &str| std::fs::read(base.join(f)).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()).unwrap_or(serde_json::Value::Null);
+    let bundle = serde_json::json!({
+        "tessera": env!("CARGO_PKG_VERSION"),
+        "care": read("care.json"),
+        "gamemode": read("gamemode.json"),
+        "prefs": read("prefs.json"),
+        "ui": local,
+    });
+    std::fs::write(&path, serde_json::to_vec_pretty(&bundle).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+}
+
+/// Load a settings bundle; returns the UI part for the frontend to apply.
+#[tauri::command]
+fn settings_import(path: String, app: AppHandle, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let base = data_dir(&app)?;
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).map_err(|e| e.to_string())?).map_err(|e| format!("not a Tessera settings file ({e})"))?;
+    if v.get("tessera").is_none() {
+        return Err("not a Tessera settings file".into());
+    }
+    for (key, file) in [("care", "care.json"), ("gamemode", "gamemode.json"), ("prefs", "prefs.json")] {
+        if let Some(part) = v.get(key).filter(|p| p.is_object()) {
+            std::fs::write(base.join(file), serde_json::to_vec_pretty(part).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        }
+    }
+    *state.prefs.lock() = tray::load_prefs(&app);
+    apply_hotkeys(&app);
+    let care_cfg = care::load_config(&base);
+    let _ = care::apply_schedule(&care_cfg);
+    Ok(v.get("ui").cloned().unwrap_or(serde_json::Value::Null))
+}
+
+#[cfg(windows)]
+mod win_cmds {
+    //! Windows-only commands of 0.3 (registered only on Windows).
+    use super::*;
+
+    #[tauri::command]
+    pub async fn games_list(app: AppHandle) -> Result<Vec<games::Game>, String> {
+        let base = data_dir(&app)?;
+        blocking(move || games::library(&gamemode::load(&base).custom)).await
+    }
+
+    #[tauri::command]
+    pub fn game_launch(target: String) -> Result<(), String> {
+        games::launch(&target)
+    }
+
+    #[tauri::command]
+    pub async fn game_exes(dir: String) -> Result<Vec<(String, games::ExeSettings)>, String> {
+        blocking(move || games::game_exes(&dir).into_iter().map(|e| { let s = games::exe_settings(&e); (e, s) }).collect()).await
+    }
+
+    #[tauri::command]
+    pub fn game_set_exe(exe: String, settings: games::ExeSettings) -> Result<(), String> {
+        games::set_exe_settings(&exe, &settings)
+    }
+
+    #[tauri::command]
+    pub async fn game_leftovers(app: AppHandle) -> Result<Vec<games::Leftover>, String> {
+        let base = data_dir(&app)?;
+        blocking(move || games::leftovers(&games::library(&gamemode::load(&base).custom))).await
+    }
+
+    #[tauri::command]
+    pub async fn game_remove_paths(paths: Vec<String>, app: AppHandle) -> Result<CountFreed, String> {
+        let base = data_dir(&app)?;
+        let out = blocking(move || {
+            let lib = games::library(&gamemode::load(&base).custom);
+            let (freed, failed) = games::remove_paths(&paths, &lib);
+            stats::record_freed(&base, "games", freed);
+            CountFreed { freed, failed }
+        })
+        .await?;
+        Ok(out)
+    }
+
+    #[derive(Serialize)]
+    pub struct CountFreed {
+        freed: u64,
+        failed: Vec<String>,
+    }
+
+    #[tauri::command]
+    pub fn gamemode_config(app: AppHandle) -> Result<gamemode::Config, String> {
+        Ok(gamemode::load(&data_dir(&app)?))
+    }
+
+    #[tauri::command]
+    pub fn gamemode_set_config(config: gamemode::Config, app: AppHandle) -> Result<(), String> {
+        gamemode::save(&data_dir(&app)?, &config)
+    }
+
+    #[tauri::command]
+    pub fn gamemode_status() -> gamemode::Status {
+        gamemode::status()
+    }
+
+    #[tauri::command]
+    pub fn gamemode_answer(yes: bool, remember: bool, app: AppHandle) {
+        let a = app.clone();
+        // Boosting kills processes and runs powercfg: keep it off the UI thread
+        std::thread::spawn(move || gamemode::answer(&a, yes, remember));
+    }
+
+    #[tauri::command]
+    pub async fn gamemode_boost_now(app: AppHandle) -> Result<(), String> {
+        blocking(move || gamemode::boost_now(&app)).await?
+    }
+
+    #[tauri::command]
+    pub fn gamemode_sessions(app: AppHandle) -> Result<Vec<gamemode::SessionReport>, String> {
+        Ok(gamemode::reports(&data_dir(&app)?))
+    }
+
+    #[derive(Serialize)]
+    pub struct RunningApp {
+        /// Lowercase name without .exe (what the close / keep lists hold).
+        id: String,
+        name: String,
+        memory: u64,
+    }
+
+    /// Apps running right now, for picking the close and keep lists.
+    #[tauri::command]
+    pub async fn running_apps() -> Result<Vec<RunningApp>, String> {
+        blocking(|| {
+            use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, UpdateKind};
+            let mut sys = sysinfo::System::new();
+            sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing().with_memory().with_exe(UpdateKind::OnlyIfNotSet));
+            let windir = sysutil::env_path("SystemRoot").map(|p| p.to_string_lossy().to_lowercase()).unwrap_or_else(|| r"c:\windows".into());
+            let mut out: Vec<RunningApp> = Vec::new();
+            for p in sys.processes().values() {
+                // Windows' own processes are never offered for closing
+                let Some(exe) = p.exe() else { continue };
+                if exe.to_string_lossy().to_lowercase().starts_with(&windir) {
+                    continue;
+                }
+                let name = p.name().to_string_lossy().into_owned();
+                let id = name.to_lowercase().trim_end_matches(".exe").to_string();
+                if id == "tessera" {
+                    continue;
+                }
+                match out.iter_mut().find(|a| a.id == id) {
+                    Some(a) => a.memory += p.memory(),
+                    None => out.push(RunningApp { id, name: name.trim_end_matches(".exe").to_string(), memory: p.memory() }),
+                }
+            }
+            out.retain(|a| a.memory > 20 * 1024 * 1024);
+            out.sort_by_key(|a| std::cmp::Reverse(a.memory));
+            out
+        })
+        .await
+    }
+
+    #[derive(Serialize)]
+    pub struct FpsStatus {
+        tool_ready: bool,
+        recording: Option<String>,
+        elevated: bool,
+        overlay: bool,
+    }
+
+    #[tauri::command]
+    pub fn fps_status(app: AppHandle) -> Result<FpsStatus, String> {
+        Ok(FpsStatus { tool_ready: fps::tool_ready(&data_dir(&app)?), recording: fps::recording(), elevated: mft::is_elevated(), overlay: fps::overlay_open(&app) })
+    }
+
+    #[tauri::command]
+    pub fn fps_start(exe: String, game: String, app: AppHandle) {
+        fps::start(&app, &exe, game);
+    }
+
+    #[tauri::command]
+    pub fn fps_stop(app: AppHandle) -> Result<Option<fps::FpsSummary>, String> {
+        let s = fps::stop();
+        if let Some(s) = &s {
+            fps::save_session(&data_dir(&app)?, s);
+        }
+        Ok(s)
+    }
+
+    #[tauri::command]
+    pub fn fps_sessions(app: AppHandle) -> Result<Vec<fps::FpsSummary>, String> {
+        Ok(fps::sessions(&data_dir(&app)?))
+    }
+
+    #[tauri::command]
+    pub fn fps_delete(start: u64, app: AppHandle) -> Result<(), String> {
+        fps::delete_session(&data_dir(&app)?, start);
+        Ok(())
+    }
+
+    #[tauri::command]
+    pub fn overlay_set(on: bool, app: AppHandle) {
+        fps::show_overlay(&app, on);
+    }
+
+    #[derive(Serialize)]
+    pub struct DisplayInfo {
+        monitors: Vec<display::Monitor>,
+        windowed_opt: bool,
+        vrr: bool,
+        /// (current ms, best ms)
+        timer: (f32, f32),
+        core_parking: Option<u32>,
+    }
+
+    #[tauri::command]
+    pub async fn display_info() -> Result<DisplayInfo, String> {
+        blocking(|| DisplayInfo {
+            monitors: display::monitors(),
+            windowed_opt: display::graphics_switch("SwapEffectUpgradeEnable"),
+            vrr: display::graphics_switch("VRROptimizeEnable"),
+            timer: memory::timer_resolution(),
+            core_parking: memory::core_parking_min(),
+        })
+        .await
+    }
+
+    #[tauri::command]
+    pub fn display_set_refresh(device: String, hz: u32) -> Result<(), String> {
+        display::set_refresh(&device, hz)
+    }
+
+    #[tauri::command]
+    pub fn display_set_switch(key: String, on: bool) -> Result<(), String> {
+        display::set_graphics_switch(&key, on)
+    }
+
+    #[tauri::command]
+    pub async fn core_parking_set(percent: u32) -> Result<(), String> {
+        blocking(move || memory::set_core_parking_min(percent)).await?
+    }
+
+    /// Clear the standby list now; returns how much cached memory was released.
+    #[tauri::command]
+    pub async fn ram_purge(app: AppHandle) -> Result<u64, String> {
+        let before = sensors::latest().and_then(|s| s.ram_standby).unwrap_or(0);
+        blocking(memory::purge_standby).await??;
+        std::thread::sleep(std::time::Duration::from_millis(2200));
+        let after = sensors::latest().and_then(|s| s.ram_standby).unwrap_or(before);
+        let _ = app;
+        Ok(before.saturating_sub(after))
+    }
+
+    #[tauri::command]
+    pub async fn crashes_list(days: u32) -> Result<Vec<health::Crash>, String> {
+        blocking(move || health::crashes(days.clamp(1, 180))).await
+    }
+
+    #[tauri::command]
+    pub async fn security_status() -> Result<health::Security, String> {
+        blocking(health::security).await
+    }
+
+    #[tauri::command]
+    pub async fn winupdate_status() -> Result<health::UpdateStatus, String> {
+        blocking(health::update_status).await
+    }
+
+    #[tauri::command]
+    pub async fn winupdate_pending() -> Result<Vec<String>, String> {
+        blocking(health::pending_updates).await?
+    }
+
+    #[tauri::command]
+    pub async fn winupdate_reset() -> Result<(), String> {
+        blocking(health::reset_update_cache).await?
+    }
+
+    #[tauri::command]
+    pub async fn boot_info() -> Result<health::BootInfo, String> {
+        blocking(health::boot_info).await
+    }
+
+    #[tauri::command]
+    pub async fn drivers_list() -> Result<Vec<health::Driver>, String> {
+        blocking(health::drivers).await
+    }
+
+    #[tauri::command]
+    pub async fn component_cleanup(app: AppHandle) -> Result<u64, String> {
+        let base = data_dir(&app)?;
+        blocking(move || {
+            restore_point_for(&app, "Tessera component cleanup");
+            let freed = health::component_cleanup()?;
+            stats::record_freed(&base, "windows", freed);
+            Ok(freed)
+        })
+        .await?
+    }
+}
+#[cfg(windows)]
+use win_cmds::*;
+
+/// Once an hour: the weekly summary notification, when it's due.
+fn start_weekly(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(3600));
+        let Ok(base) = data_dir(&app) else { continue };
+        if !app.state::<AppState>().prefs.lock().weekly || !stats::weekly_due(&base) {
+            continue;
+        }
+        let r = stats::report(&base, 7);
+        let score = r.care.last().map(|c| format!("{:.0}", c.1)).unwrap_or_else(|| "—".into());
+        let l = app.state::<AppState>().labels.lock().clone();
+        let body = l.weekly_body.replace("{size}", &fmt_bytes(r.freed)).replace("{games}", &r.games.len().to_string()).replace("{score}", &score);
+        tray::notify(&app, &l.weekly_title, &body);
+    });
+}
+
 #[tauri::command]
 fn prefs_get(state: State<'_, AppState>) -> tray::Prefs {
     state.prefs.lock().clone()
 }
 
+/// Save prefs; returns hotkeys that could not be registered.
 #[tauri::command]
-fn prefs_set(prefs: tray::Prefs, app: AppHandle, state: State<'_, AppState>) {
+fn prefs_set(prefs: tray::Prefs, app: AppHandle, state: State<'_, AppState>) -> Vec<String> {
     *state.prefs.lock() = prefs.clone();
     tray::save_prefs(&app, &prefs);
+    if let Some(w) = app.get_webview_window("widget") {
+        let _ = w.set_always_on_top(prefs.widget_on_top);
+    }
+    apply_hotkeys(&app)
 }
 
 /// Tray menu and notification texts in the UI language.
@@ -1615,6 +2098,37 @@ fn reveal(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// The command list; the 0.3 Windows-only commands are only registered on Windows.
+fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
+    macro_rules! common {
+        ($($extra:ident),* $(,)?) => {
+            tauri::generate_handler![
+                list_drives, scan, cancel_scan, get_node, get_ancestors, largest_files, find_junk, delete_nodes, cancel_delete, reveal,
+                is_elevated, relaunch_as_admin, find_duplicates, cancel_duplicates, hardlink_dupes, history_list, history_diff,
+                set_live_watch, get_summary, load_cached,
+                opt_status, opt_apply_profile, opt_set_tweak, opt_set_power_plan, opt_restore, opt_startup_list, opt_startup_set,
+                opt_processes, opt_kill, sys_stats,
+                junk_scan, junk_clean, privacy_scan, privacy_clean, shortcuts_scan, shortcuts_fix, empty_folders, shred_inspect, shred_paths,
+                disk_health, disk_optimize, registry_scan, registry_fix, registry_backups, registry_undo, programs_list, program_uninstall,
+                program_leftovers, leftovers_remove, updates_list, update_install, net_status, net_set_dns, net_latency, net_flush,
+                net_set_tcp, net_restore, net_repair, care_config, care_set_config, care_scan, care_fix, prefs_get, prefs_set, tray_labels,
+                launch_state, sensors_now, sensors_history, ping_get, ping_gateway, battery_info, stats_report, widget_set,
+                settings_export, settings_import, open_uri
+                $(, $extra)*
+            ]
+        };
+    }
+    #[cfg(windows)]
+    return common![
+        games_list, game_launch, game_exes, game_set_exe, game_leftovers, game_remove_paths, gamemode_config, gamemode_set_config,
+        gamemode_status, gamemode_answer, gamemode_boost_now, gamemode_sessions, running_apps, fps_status, fps_start, fps_stop,
+        fps_sessions, fps_delete, overlay_set, display_info, display_set_refresh, display_set_switch, core_parking_set, ram_purge,
+        crashes_list, security_status, winupdate_status, winupdate_pending, winupdate_reset, boot_info, drivers_list, component_cleanup,
+    ];
+    #[cfg(not(windows))]
+    return common![];
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Scheduled Care runs start Tessera with --care: scan in the background, window stays hidden
@@ -1633,6 +2147,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(AppState::default())
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -1643,6 +2158,17 @@ pub fn run() {
                 Err(e) => eprintln!("tray icon unavailable: {e}"),
             }
             tray::start_meter(handle.clone());
+            if let Ok(base) = data_dir(&handle) {
+                sensors::start(base);
+            }
+            #[cfg(windows)]
+            gamemode::start(handle.clone());
+            apply_hotkeys(&handle);
+            start_weekly(handle.clone());
+            let prefs = st.prefs.lock().clone();
+            if prefs.widget {
+                tray::small_window(&handle, "widget", true, 260.0, 196.0, false, prefs.widget_on_top);
+            }
             if care_mode {
                 st.hidden_start.store(true, Ordering::Relaxed);
                 run_care_background(&handle, true);
@@ -1659,18 +2185,7 @@ pub fn run() {
                 api.prevent_close();
             }
         })
-        .invoke_handler(tauri::generate_handler![
-            list_drives, scan, cancel_scan, get_node, get_ancestors, largest_files, find_junk, delete_nodes, cancel_delete, reveal,
-            is_elevated, relaunch_as_admin, find_duplicates, cancel_duplicates, hardlink_dupes, history_list, history_diff,
-            set_live_watch, get_summary, load_cached,
-            opt_status, opt_apply_profile, opt_set_tweak, opt_set_power_plan, opt_restore, opt_startup_list, opt_startup_set,
-            opt_processes, opt_kill, sys_stats,
-            junk_scan, junk_clean, privacy_scan, privacy_clean, shortcuts_scan, shortcuts_fix, empty_folders, shred_inspect, shred_paths,
-            disk_health, disk_optimize, registry_scan, registry_fix, registry_backups, registry_undo, programs_list, program_uninstall,
-            program_leftovers, leftovers_remove, updates_list, update_install, net_status, net_set_dns, net_latency, net_flush,
-            net_set_tcp, net_restore, net_repair, care_config, care_set_config, care_scan, care_fix, prefs_get, prefs_set, tray_labels,
-            launch_state
-        ])
+        .invoke_handler(handlers())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

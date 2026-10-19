@@ -32,12 +32,33 @@
   import Updater from '$lib/views/Updater.svelte';
   import DiskHealth from '$lib/views/DiskHealth.svelte';
   import Settings from '$lib/views/Settings.svelte';
+  import GameMode from '$lib/views/GameMode.svelte';
+  import Library from '$lib/views/Library.svelte';
+  import Fps from '$lib/views/Fps.svelte';
+  import Display from '$lib/views/Display.svelte';
+  import Temps from '$lib/views/Temps.svelte';
+  import BatteryView from '$lib/views/Battery.svelte';
+  import Crashes from '$lib/views/Crashes.svelte';
+  import SecurityView from '$lib/views/Security.svelte';
+  import Boot from '$lib/views/Boot.svelte';
+  import Drivers from '$lib/views/Drivers.svelte';
+  import WinUpdate from '$lib/views/WinUpdate.svelte';
+  import Report from '$lib/views/Report.svelte';
+  import Overlay from '$lib/windows/Overlay.svelte';
+  import Widget from '$lib/windows/Widget.svelte';
+  import Prompt from '$lib/windows/Prompt.svelte';
+
+  /** Small extra windows (FPS window, widget, boost prompt) load this page with ?window=… */
+  const SMALL = new URLSearchParams(location.search).get('window');
+  const SMALL_VIEWS: Record<string, typeof Overlay> = { overlay: Overlay, widget: Widget, prompt: Prompt };
 
   const VIEWS: Record<View, typeof Care> = {
     care: Care, overview: Overview, explorer: Explorer, files: Files, dupes: Duplicates, history: History,
     cleanup: Cleanup, privacy: Privacy, registry: Registry, shortcuts: Shortcuts, shredder: Shredder,
     optimizer: Optimizer, startup: Startup, background: Background, internet: Internet,
     uninstaller: Uninstaller, updater: Updater, health: DiskHealth, settings: Settings,
+    gamemode: GameMode, library: Library, fps: Fps, display: Display, temps: Temps, battery: BatteryView, crashes: Crashes,
+    security: SecurityView, boot: Boot, drivers: Drivers, winupdate: WinUpdate, report: Report,
   };
   /** Pages that show the scanned drive; the header shows its path there and the drives list matters. */
   const DISK_VIEWS: View[] = ['overview', 'explorer', 'files', 'dupes', 'history', 'cleanup', 'shortcuts'];
@@ -54,7 +75,7 @@
   }
   function go(v: View) { app.view = v; fly = null; }
 
-  let scanDlg: HTMLDialogElement;
+  let scanDlg = $state<HTMLDialogElement>();
   /** Estimated scan progress 0..0.95, or null when unknown (folder scan, or past the estimate). */
   let scanPct = $derived.by(() => {
     const d = app.drive;
@@ -64,9 +85,13 @@
     const p = app.progress.bytes / used;
     return p >= 0.95 ? null : p;
   });
-  $effect(() => { if (app.scanning && !scanDlg.open) scanDlg.showModal(); else if (!app.scanning && scanDlg.open) scanDlg.close(); });
+  $effect(() => { if (!scanDlg) return; if (app.scanning && !scanDlg.open) scanDlg.showModal(); else if (!app.scanning && scanDlg.open) scanDlg.close(); });
 
   onMount(() => {
+    if (SMALL) {
+      document.documentElement.classList.add('small-window');
+      return;
+    }
     app.init().then(() => {
       // Dev preview only (`pnpm dev` + mock backend): ?view=explorer&theme=light&lang=en opens a view after a fake scan
       if (!import.meta.env.DEV) return;
@@ -98,8 +123,12 @@
   let Current = $derived(VIEWS[app.view] ?? Care);
 </script>
 
-<svelte:window onkeydown={onkey} />
+<svelte:window onkeydown={e => !SMALL && onkey(e)} />
 
+{#if SMALL}
+  {@const W = SMALL_VIEWS[SMALL]}
+  {#if W}<W />{/if}
+{:else}
 <div class="bg-blobs"><span></span><span></span><span></span></div>
 
 {#snippet item(n: NavItem, child = false)}
@@ -275,3 +304,4 @@
     <div class="alert alert-{tt.kind} alert-soft shadow-lg glass max-w-md"><span class="selectable">{tt.msg}</span></div>
   {/each}
 </div>
+{/if}

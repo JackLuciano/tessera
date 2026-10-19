@@ -4,9 +4,48 @@
   import Icon from '../Icon.svelte';
   import Logo from '../Logo.svelte';
   import { updater } from '../update.svelte';
+  import { save as saveDialog, open as openDialog } from '@tauri-apps/plugin-dialog';
+  import { api } from '../api';
+  import { IS_WINDOWS } from '../nav';
 
   let permDlg: HTMLDialogElement;
   let ack = $state(false);
+
+  // ---- hotkeys: click a field, press the combination ----
+  const HOTKEYS = ['fps', 'boost', 'care', 'widget'].filter(k => IS_WINDOWS || (k !== 'fps' && k !== 'boost'));
+  function captureKey(action: string, e: KeyboardEvent) {
+    e.preventDefault();
+    if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return;
+    if (e.key === 'Escape' || e.key === 'Backspace' || e.key === 'Delete') {
+      app.setPrefs({ hotkeys: { ...app.prefs.hotkeys, [action]: '' } });
+      (e.target as HTMLInputElement).blur();
+      return;
+    }
+    const mods = [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Super'].filter(Boolean);
+    // A global shortcut without a modifier would swallow that key everywhere: require one
+    if (!mods.length) return;
+    const key = e.code.startsWith('Key') ? e.code.slice(3) : e.code.startsWith('Digit') ? e.code.slice(5) : e.key.length === 1 ? e.key.toUpperCase() : e.code;
+    app.setPrefs({ hotkeys: { ...app.prefs.hotkeys, [action]: [...mods, key].join('+') } });
+    (e.target as HTMLInputElement).blur();
+  }
+
+  // ---- settings file ----
+  const LOCAL_KEYS = () => { const out: Record<string, string> = {}; try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i)!; if (k.startsWith('tessera-')) out[k] = localStorage.getItem(k) ?? ''; } } catch {} return out; };
+  async function exportSettings() {
+    const path = await saveDialog({ defaultPath: 'tessera-settings.json', filters: [{ name: 'Tessera', extensions: ['json'] }] });
+    if (!path) return;
+    try { await api.exportSettings(path, LOCAL_KEYS()); app.toast(t('io.exported'), 'success'); } catch (e) { app.toast(String(e), 'error'); }
+  }
+  async function importSettings() {
+    const path = await openDialog({ multiple: false, filters: [{ name: 'Tessera', extensions: ['json'] }] });
+    if (typeof path !== 'string') return;
+    try {
+      const ui = await api.importSettings(path);
+      try { for (const [k, v] of Object.entries(ui ?? {})) if (k.startsWith('tessera-') && typeof v === 'string') localStorage.setItem(k, v); } catch {}
+      app.toast(t('io.imported'), 'success');
+      setTimeout(() => location.reload(), 900);
+    } catch (e) { app.toast(String(e), 'error'); }
+  }
 
   function onPermToggle(e: Event) {
     const el = e.target as HTMLInputElement;
@@ -60,6 +99,28 @@
       <div class="flex-1"><div class="font-medium text-sm">{t('settings.trayMeter')}</div><div class="text-xs muted">{t('settings.trayMeterHint')}</div></div>
       <input type="checkbox" class="toggle toggle-primary" checked={app.prefs.tray_meter} onchange={e => app.setPrefs({ tray_meter: (e.target as HTMLInputElement).checked })} />
     </div>
+    <div class="flex items-center gap-4 py-4">
+      <div class="flex-1"><div class="font-medium text-sm">{t('settings.widget')}</div><div class="text-xs muted">{t('settings.widgetHint')}</div></div>
+      <label class="flex items-center gap-1.5 text-xs muted"><input type="checkbox" class="checkbox checkbox-xs" checked={app.prefs.widget_on_top} onchange={e => app.setPrefs({ widget_on_top: (e.target as HTMLInputElement).checked })} />{t('settings.onTop')}</label>
+      <input type="checkbox" class="toggle toggle-primary" checked={app.prefs.widget} onchange={e => { const on = (e.target as HTMLInputElement).checked; app.prefs = { ...app.prefs, widget: on }; api.widget(on).catch(() => {}); }} />
+    </div>
+    <div class="flex items-center gap-4 py-4">
+      <div class="flex-1"><div class="font-medium text-sm">{t('settings.weekly')}</div><div class="text-xs muted">{t('settings.weeklyHint')}</div></div>
+      <input type="checkbox" class="toggle toggle-primary" checked={app.prefs.weekly} onchange={e => app.setPrefs({ weekly: (e.target as HTMLInputElement).checked })} />
+    </div>
+  </div>
+
+  <h2 class="text-lg font-semibold mt-6 mb-1 flex items-center gap-2">{t('hotkeys.title')}
+    <input type="checkbox" class="toggle toggle-primary toggle-sm ml-auto" checked={app.prefs.hotkeys_enabled} onchange={e => app.setPrefs({ hotkeys_enabled: (e.target as HTMLInputElement).checked })} />
+  </h2>
+  <div class="text-xs muted mb-2">{t('hotkeys.sub')}</div>
+  <div class="divide-y divide-[var(--glass-border)] {app.prefs.hotkeys_enabled ? '' : 'opacity-50 pointer-events-none'}">
+    {#each HOTKEYS as k (k)}
+      <div class="flex items-center gap-4 py-3">
+        <div class="flex-1 text-sm">{t('hotkeys.' + k)}</div>
+        <input class="input input-sm w-44 hotkey" readonly value={app.prefs.hotkeys[k] || t('hotkeys.none')} onkeydown={e => captureKey(k, e)} title={t('hotkeys.hint')} />
+      </div>
+    {/each}
   </div>
 
   <h2 class="text-lg font-semibold mt-6 mb-1">{t('settings.updates')}</h2>
@@ -103,6 +164,15 @@
     <button class="btn btn-sm" disabled={updater.state === 'checking' || updater.state === 'downloading'} onclick={() => updater.check(false)}>
       {#if updater.state === 'checking'}<span class="loading loading-spinner loading-xs"></span>{/if}{t('update.check')}
     </button>
+  </div>
+</section>
+
+<section class="glass p-5 reveal" style="--i:3">
+  <div class="font-semibold">{t('io.title')}</div>
+  <div class="text-xs muted">{t('io.sub')}</div>
+  <div class="flex gap-2 mt-3">
+    <button class="btn btn-sm gap-1.5" onclick={exportSettings}><Icon name="export" size=".9rem" />{t('io.export')}</button>
+    <button class="btn btn-sm gap-1.5" onclick={importSettings}><Icon name="import" size=".9rem" />{t('io.import')}</button>
   </div>
 </section>
 </div>

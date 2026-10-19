@@ -1,7 +1,7 @@
 /** Helpers shared by the system-tool pages (Care, cleaners, uninstaller, internet…). */
 import { app } from './store.svelte';
-import { t } from './i18n.svelte';
-import type { RestorePoint } from './api';
+import { t, i18n } from './i18n.svelte';
+import { api, type RestorePoint } from './api';
 
 /** What will happen about a restore point, for confirmation dialogs. */
 export const rpNote = () => (app.elevated ? t('rp.willCreate') : t('rp.needsAdmin'));
@@ -37,5 +37,12 @@ export const driveLabel = (mount: string) => {
   return d ? `${d.name || t('drive.local')} (${mount})` : mount;
 };
 
+/** Open a Windows Settings / Security page or a vendor download page (the backend allows only those). */
+export function openSystem(uri: string) {
+  api.openUri(uri).catch(e => app.toast(String(e), 'error'));
+}
+
 /** Date like "12 Mar 2025" in the UI language. */
-export const day = (unix: number) => (unix ? new Date(unix * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '—');
+export const day = (unix: number) => (unix ? new Date(unix * 1000).toLocaleDateString(i18n.locale, { year: 'numeric', month: 'short', day: 'numeric' }) : '—');
+/** Time like "14:05" in the UI language. */
+export const clock = (unix: number) => new Date(unix * 1000).toLocaleTimeString(i18n.locale, { hour: '2-digit', minute: '2-digit' });
