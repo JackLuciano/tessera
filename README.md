@@ -59,6 +59,79 @@ booster, drive health and a Windows optimizer with gaming, work and battery prof
 
 ## 📸 Screenshots
 
+### Care & gaming
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/care.png" alt="One-click Care" /></td>
+    <td><img src="docs/screenshots/gamemode.png" alt="Game mode" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Care</b> — one scan, one click, health score</td>
+    <td align="center"><b>Game mode</b> — your boost, your app lists</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/library.png" alt="Game library" /></td>
+    <td><img src="docs/screenshots/fps.png" alt="FPS and ping" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Game library</b> — every launcher in one grid</td>
+    <td align="center"><b>FPS & ping</b> — sessions to compare, live ping</td>
+  </tr>
+</table>
+
+### PC health
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/temps.png" alt="Temperatures" /></td>
+    <td><img src="docs/screenshots/crashes.png" alt="Crashes and blue screens" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Temperatures</b> — throttling and fan-dust trend</td>
+    <td align="center"><b>Crashes</b> — blue screens in plain words</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/security.png" alt="Security checkup" /></td>
+    <td><img src="docs/screenshots/disk-health.png" alt="Disk health" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Security checkup</b> — what's on, what isn't</td>
+    <td align="center"><b>Disk health</b> — SMART, wear, TRIM</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/battery.png" alt="Battery health" /></td>
+    <td><img src="docs/screenshots/report.png" alt="Weekly report" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Battery</b> — capacity left and over time</td>
+    <td align="center"><b>Weekly report</b> — space freed, games, score</td>
+  </tr>
+</table>
+
+### Cleaning & tools
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/privacy.png" alt="Privacy sweep" /></td>
+    <td><img src="docs/screenshots/registry.png" alt="Registry cleaner" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Privacy sweep</b> — browsers and Windows traces</td>
+    <td align="center"><b>Registry cleaner</b> — backed up, one-click undo</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/uninstaller.png" alt="Uninstaller" /></td>
+    <td><img src="docs/screenshots/internet.png" alt="Internet booster" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Uninstaller</b> — plus the leftovers</td>
+    <td align="center"><b>Internet booster</b> — fastest DNS, reversible</td>
+  </tr>
+</table>
+
+### Disk analyzer
+
 <table>
   <tr>
     <td><img src="docs/screenshots/explorer.png" alt="Treemap explorer" /></td>
