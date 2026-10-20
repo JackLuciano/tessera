@@ -29,7 +29,18 @@ booster, drive health and a Windows optimizer with gaming, work and battery prof
 |---|---|
 | 🎮 **Automatic game mode** | Notices when a game starts and asks (or just does it, per game): high-performance power plan, close the apps on *your* list (never the ones you keep), clear standby RAM, fine timer resolution, unparked cores, then everything back when you quit. Per-game CPU priority, GPU preference and fullscreen-optimization switches. |
 | 📚 **Game library** | Steam, Epic, GOG, Ubisoft, Xbox, EA, Battle.net, Riot and Rockstar games in one grid with covers, size, last played and playtime; clean leftovers of uninstalled games and old shader caches. |
-| 📈 **FPS & ping** | Frame rate, 1% / 0.1% lows and frame times through PresentMon (nothing injected into games) in a small always-on-top window, saved per session for before/after comparisons; live ping, jitter and packet loss. |
+| 📈 **FPS & ping** | Frame rate, 1% / 0.1% lows and frame times through PresentMon (nothing injected into games) in a small always-on-top window you can place, size and trim to the values you want, saved per session for before/after comparisons; live ping, jitter and packet loss. |
+| 🔍 **Stutter detective & latency check** | Every recorded session lists its hitches with the likely cause (heat, disk, a background app, CPU or GPU maxed, the game itself) and checks how frames reach the screen: V-Sync, compositor, GPU-bound queueing, dropped frames, with concrete fixes. |
+| 🖼️ **Graphics presets** | Competitive, balanced and quality presets for Unreal Engine games through their own settings file, every level adjustable, backed up before each change with one-click restore. |
+| 📶 **Network priority while gaming** | Bandwidth caps for launchers, sync clients and Windows Update while a boosted game runs (Windows QoS, gone when the game exits). |
+| 🧽 **Cleanup after game updates** | Notices when a Steam or Epic game finished updating and offers the leftover downloads and outdated shader caches it left behind. |
+| 🐢 **"Why is my PC slow?"** | One click shows what uses the CPU, memory, disk and network right now, names well-known background jobs (Defender scans, indexing, updates…) and points to the fix. |
+| 🌙 **Wake & sleep inspector** | What woke the PC, which devices and scheduled tasks may wake it (switch them off), and what keeps it awake right now. |
+| ⏱️ **Startup impact timeline** | Every boot with the apps, drivers and services that slowed it, and when each startup app actually started. |
+| 🗃️ **Backup** | Scheduled, incremental backups of documents and game saves to another drive: complete dated folders where unchanged files are hard links, the last N kept. |
+| 🏁 **Benchmark** | A half-minute CPU, GPU, memory and disk test, saved with the driver version and profile so before/after comparisons explain themselves. |
+| 🏠 **Home dashboard & other PCs** | Pin tiles from any page to your own home screen; see the Care score, temperatures and free space of the other PCs at home (LAN only, paired with a code, read-only). |
+| 🧰 **More tools** | Old driver package cleanup, app update rollback (winget), your own Smart cleanup rules with a live preview. |
 | 🌡️ **Temperatures & throttling** | CPU / GPU temperature, clocks, power and fan without extra drivers, a throttling log, and an idle-temperature trend that tells you when the fans need cleaning. |
 | 🩹 **PC health** | Battery wear, crashes and blue screens in plain words, security checkup, boot time, GPU driver age, Windows Update helper, refresh-rate check, weekly report, desktop widget, global hotkeys and settings export. |
 | ❤️ **One-click Care** | One scan checks junk files, privacy traces, the registry, broken shortcuts, startup apps, drive health and software updates, gives a health score and fixes the safe part with one click — after showing you exactly what changes. Can run on a schedule (Windows Task Scheduler) and notify you from the tray. |
@@ -260,7 +271,8 @@ for CI. Contributors without the key still get a working build — just without 
 - [x] Windows optimizer with switchable profiles
 - [x] One-click Care: privacy sweep, registry cleaner, uninstaller, updater, internet booster, drive health, shredder, tray
 - [x] Automatic game mode with per-game settings, game library, FPS & ping, temperatures, PC health tools
-- [ ] Ideas for 0.4 live in the [issues](../../issues?q=label%3A%22planned%3A+0.4%22)
+- [x] Stutter detective, latency check, graphics presets, network priority, backups, benchmark, home dashboard, multi-PC view and more (0.4)
+- [ ] Next ideas live in the [issues](../../issues)
 - [ ] Even more languages — [help translate!](CONTRIBUTING.md#translations)
 
 ## 🤝 Contributing

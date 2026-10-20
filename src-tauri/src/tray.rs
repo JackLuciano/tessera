@@ -28,12 +28,36 @@ pub struct Prefs {
     pub hotkeys: std::collections::BTreeMap<String, String>,
     /// Send the weekly summary notification.
     pub weekly: bool,
+    /// Look of the in-game FPS window.
+    pub overlay: OverlayCfg,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
         let hotkeys = [("fps", "Ctrl+Shift+F"), ("boost", "Ctrl+Shift+B"), ("care", "Ctrl+Shift+C"), ("widget", "Ctrl+Shift+W")].iter().map(|(a, k)| (a.to_string(), k.to_string())).collect();
-        Self { close_to_tray: true, tray_meter: true, tray_hint_shown: false, widget: false, widget_on_top: true, hotkeys_enabled: true, hotkeys, weekly: true }
+        Self { close_to_tray: true, tray_meter: true, tray_hint_shown: false, widget: false, widget_on_top: true, hotkeys_enabled: true, hotkeys, weekly: true, overlay: OverlayCfg::default() }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
+pub struct OverlayCfg {
+    /// tl, tr, bl, br
+    pub corner: String,
+    /// Size factor, 0.7–1.6.
+    pub scale: f32,
+    /// Background opacity, 0.2–1.
+    pub opacity: f32,
+    /// fps, low1, frametime, graph, cpu, gpu, temps, ping
+    pub fields: Vec<String>,
+    /// Everything on one line.
+    pub compact: bool,
+}
+
+impl Default for OverlayCfg {
+    fn default() -> Self {
+        let fields = ["fps", "low1", "frametime", "graph", "cpu", "gpu", "ping"].iter().map(|s| s.to_string()).collect();
+        Self { corner: "tl".into(), scale: 1.0, opacity: 0.9, fields, compact: false }
     }
 }
 
@@ -61,6 +85,13 @@ pub struct Labels {
     pub weekly_title: String,
     /// {size} {games} {score}
     pub weekly_body: String,
+    /// {game}
+    pub update_title: String,
+    /// {size}
+    pub update_body: String,
+    pub backup_title: String,
+    /// {name} {size}
+    pub backup_body: String,
 }
 
 impl Default for Labels {
@@ -82,6 +113,10 @@ impl Default for Labels {
             boost_body: "{game} is running with the boost settings".into(),
             weekly_title: "Your week with Tessera".into(),
             weekly_body: "{size} freed · {games} games played · health {score}".into(),
+            update_title: "{game} was updated".into(),
+            update_body: "The update left {size} behind. Open the Game library to clean it.".into(),
+            backup_title: "Backup done".into(),
+            backup_body: "{name}: {size} of new or changed files saved".into(),
         }
     }
 }
@@ -262,10 +297,31 @@ pub fn on_close(app: &AppHandle) -> bool {
     true
 }
 
-/// A small frameless window (FPS window, desktop widget) in a corner of the primary screen.
-/// `left`: top-left corner, otherwise top-right. Opening an open window or closing a closed one
-/// does nothing.
-pub fn small_window(app: &AppHandle, label: &str, on: bool, w: f64, h: f64, left: bool, on_top: bool) {
+/// Top-left position (logical) for a `w`×`h` window in a corner (tl, tr, bl, br) of a monitor.
+pub fn corner_pos(m: &tauri::Monitor, corner: &str, w: f64, h: f64) -> (f64, f64) {
+    let scale = m.scale_factor();
+    let size = m.size().to_logical::<f64>(scale);
+    let pos = m.position().to_logical::<f64>(scale);
+    let x = if corner.ends_with('r') { pos.x + size.width - w - 16.0 } else { pos.x + 16.0 };
+    // Bottom corners stay clear of the taskbar
+    let y = if corner.starts_with('b') { pos.y + size.height - h - 64.0 } else { pos.y + 16.0 };
+    (x, y)
+}
+
+/// Move an open small window to its corner after it changed size.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn fit_small_window(app: &AppHandle, label: &str, corner: &str, w: f64, h: f64) {
+    let Some(win) = app.get_webview_window(label) else { return };
+    let _ = win.set_size(tauri::LogicalSize::new(w, h));
+    if let Ok(Some(m)) = win.current_monitor().or_else(|_| app.primary_monitor()) {
+        let (x, y) = corner_pos(&m, corner, w, h);
+        let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+    }
+}
+
+/// A small frameless window (FPS window, desktop widget) in a corner (tl, tr, bl, br) of the
+/// primary screen. Opening an open window or closing a closed one does nothing.
+pub fn small_window(app: &AppHandle, label: &str, on: bool, w: f64, h: f64, corner: &str, on_top: bool) {
     if let Some(win) = app.get_webview_window(label) {
         if on {
             let _ = win.set_always_on_top(on_top);
@@ -277,31 +333,35 @@ pub fn small_window(app: &AppHandle, label: &str, on: bool, w: f64, h: f64, left
     if !on {
         return;
     }
-    let mut b = tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App(format!("index.html?window={label}").into()))
-        .title("Tessera")
-        .inner_size(w, h)
-        .decorations(false)
-        .resizable(false)
-        .always_on_top(on_top)
-        .skip_taskbar(true)
-        .focused(false)
-        .shadow(false);
-    // Transparent windows need Tauri's private-API feature on macOS; there the card is drawn on an
-    // opaque window instead
-    #[cfg(not(target_os = "macos"))]
-    {
-        b = b.transparent(true);
-    }
-    if let Ok(Some(m)) = app.primary_monitor() {
-        let scale = m.scale_factor();
-        let size = m.size().to_logical::<f64>(scale);
-        let pos = m.position().to_logical::<f64>(scale);
-        let x = if left { pos.x + 16.0 } else { pos.x + size.width - w - 16.0 };
-        b = b.position(x, pos.y + 16.0);
-    }
-    if let Err(e) = b.build() {
-        eprintln!("{label} window: {e}");
-    }
+    // Building a webview window on the event-loop thread (hotkey and tray callbacks, sync commands)
+    // deadlocks on Windows, so it is always built from a thread of its own
+    let app = app.clone();
+    let label = label.to_string();
+    let corner = corner.to_string();
+    std::thread::spawn(move || {
+        let mut b = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(format!("index.html?window={label}").into()))
+            .title("Tessera")
+            .inner_size(w, h)
+            .decorations(false)
+            .resizable(false)
+            .always_on_top(on_top)
+            .skip_taskbar(true)
+            .focused(false)
+            .shadow(false);
+        // Transparent windows need Tauri's private-API feature on macOS; there the card is drawn on
+        // an opaque window instead
+        #[cfg(not(target_os = "macos"))]
+        {
+            b = b.transparent(true);
+        }
+        if let Ok(Some(m)) = app.primary_monitor() {
+            let (x, y) = corner_pos(&m, &corner, w, h);
+            b = b.position(x, y);
+        }
+        if let Err(e) = b.build() {
+            eprintln!("{label} window: {e}");
+        }
+    });
 }
 
 /// Set while a Care scan runs in the background, so tray clicks and schedules don't stack up.

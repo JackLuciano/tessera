@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { app } from '../store.svelte';
-  import { api, type Driver } from '../api';
+  import { api, fmt, type Driver, type DriverStore } from '../api';
+  import { ask } from '../ask.svelte';
+  import AdminBanner from '../AdminBanner.svelte';
   import { t } from '../i18n.svelte';
   import { day, openSystem } from '../sys';
   import Icon from '../Icon.svelte';
@@ -9,6 +11,29 @@
 
   let list = $state<Driver[] | null>(null);
   onMount(() => { api.drivers().then(v => (list = v)).catch(e => { app.toast(String(e), 'error'); list = []; }); });
+
+  // ---- driver store: old packages Windows keeps after every driver update ----
+  let store = $state<DriverStore | null>(null);
+  let scanning = $state(false);
+  let removing = $state(false);
+  let showAll = $state(false);
+  async function scanStore() {
+    scanning = true;
+    try { store = await api.driverStore(); } catch (e) { app.toast(String(e), 'error'); } finally { scanning = false; }
+  }
+  async function cleanStore() {
+    const old = store?.packages.filter(p => p.removable) ?? [];
+    const ok = await ask({ title: t('drv.storeConfirm', { n: old.length }), text: t('drv.storeConfirmText'), ico: 'trash', confirm: t('drv.storeGo', { size: fmt(store?.removable_bytes ?? 0) }), items: old.map(p => ({ name: `${p.provider} · ${p.original}`, detail: `${p.version} · ${fmt(p.size)}` })) });
+    if (!ok) return;
+    removing = true;
+    try {
+      const r = await api.driverStoreRemove(old.map(p => p.inf));
+      const freed = old.filter(p => r.removed.includes(p.inf)).reduce((s, p) => s + p.size, 0);
+      app.toast(t('drv.storeDone', { n: r.removed.length, size: fmt(freed) }), r.failed.length ? 'warning' : 'success');
+      await scanStore();
+    } catch (e) { app.toast(String(e), 'error'); } finally { removing = false; }
+  }
+  let shown = $derived(store ? (showAll ? store.packages : store.packages.filter(p => p.removable)) : []);
 
   const age = (d: Driver) => (d.date ? Math.floor((Date.now() / 1000 - d.date) / 86400) : null);
   const VENDOR: Record<string, string> = { nvidia: 'oklch(70% 0.19 140)', amd: 'oklch(62% 0.22 25)', intel: 'oklch(62% 0.15 245)', other: 'var(--color-primary)' };
@@ -51,3 +76,48 @@
     {/each}
   </section>
 {/if}
+
+<section class="glass p-5 reveal" style="--i:4">
+  <div class="flex items-center justify-between gap-3 flex-wrap">
+    <div class="flex items-center gap-3">
+      <span class="status-ico" style="background:color-mix(in oklch,var(--color-primary) 14%,transparent);color:var(--color-primary)"><Icon name="archive" size="1.05rem" /></span>
+      <div><div class="font-semibold">{t('drv.store')}</div><div class="text-xs muted">{t('drv.storeSub')}</div></div>
+    </div>
+    <div class="flex gap-2">
+      {#if store && !store.needs_admin}
+        <button class="btn btn-sm btn-ghost border hairline" onclick={() => (showAll = !showAll)}>{showAll ? t('drv.storeOld') : t('drv.storeAll', { n: store.packages.length })}</button>
+      {/if}
+      {#if store?.removable_bytes}
+        <button class="btn btn-sm btn-primary gap-1.5" disabled={removing} onclick={cleanStore}>
+          {#if removing}<span class="loading loading-spinner loading-xs"></span>{:else}<Icon name="trash" size=".9rem" />{/if}{t('drv.storeGo', { size: fmt(store.removable_bytes) })}
+        </button>
+      {:else}
+        <button class="btn btn-sm gap-1.5" disabled={scanning} onclick={scanStore}>
+          {#if scanning}<span class="loading loading-spinner loading-xs"></span>{:else}<Icon name="search" size=".9rem" />{/if}{store ? t('action.refresh') : t('drv.storeScan')}
+        </button>
+      {/if}
+    </div>
+  </div>
+  {#if store?.needs_admin}
+    <div class="mt-3"><AdminBanner text={t('drv.storeAdmin')} /></div>
+  {:else if store}
+    {#if !shown.length}
+      <div class="flex items-center gap-2 text-sm mt-4" style="color:var(--color-success)"><i class="dot-ok"></i>{t('drv.storeClean')}</div>
+    {:else}
+      <div class="flex flex-col mt-3 divide-y divide-[var(--glass-border)] max-h-96 overflow-auto">
+        {#each shown as p (p.inf)}
+          <div class="flex items-center gap-3 py-2">
+            <div class="flex-1 min-w-0">
+              <div class="text-sm truncate">{p.provider || '—'} · <span class="mono text-xs">{p.original}</span></div>
+              <div class="text-[11px] muted">{p.class} · {p.version} · {day(p.date)}</div>
+            </div>
+            {#if p.removable}<span class="badge badge-sm badge-warning badge-soft">{t('drv.pkgOld')}</span>
+            {:else if p.in_use}<span class="badge badge-sm badge-success badge-soft">{t('drv.pkgUsed')}</span>
+            {:else}<span class="badge badge-sm badge-ghost">{t('drv.pkgKept')}</span>{/if}
+            <span class="mono text-xs w-20 text-right">{fmt(p.size)}</span>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  {/if}
+</section>

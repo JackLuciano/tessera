@@ -84,9 +84,122 @@ pub fn upgrade(id: &str) -> Result<(), String> {
     Err(format!("{id}: {} (exit {:#x})", if last.is_empty() { "upgrade failed" } else { last }, out.status.code().unwrap_or(-1) as u32))
 }
 
+// ---------- update history and rollback ----------
+
+/// One update done through Tessera, kept so it can be undone.
+#[derive(Serialize, serde::Deserialize, Clone, Debug)]
+pub struct Done {
+    pub id: String,
+    pub name: String,
+    pub from: String,
+    pub to: String,
+    /// Unix seconds.
+    pub at: u64,
+    /// Set once the previous version was put back.
+    #[serde(default)]
+    pub rolled_back: bool,
+}
+
+fn history_path(base: &std::path::Path) -> std::path::PathBuf {
+    base.join("update-history.json")
+}
+
+pub fn history(base: &std::path::Path) -> Vec<Done> {
+    std::fs::read(history_path(base)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+fn save_history(base: &std::path::Path, all: &[Done]) {
+    let _ = std::fs::write(history_path(base), serde_json::to_vec(all).unwrap_or_default());
+}
+
+pub fn remember(base: &std::path::Path, d: Done) {
+    let mut all = history(base);
+    all.insert(0, d);
+    all.truncate(200);
+    save_history(base, &all);
+}
+
+/// Versions winget can still install for a package, newest first.
+pub fn versions(id: &str) -> Result<Vec<String>, String> {
+    if !valid_id(id) {
+        return Err("invalid package id".into());
+    }
+    let out = crate::sysutil::command("winget")
+        .args(["show", "--id", id, "--exact", "--versions", "--accept-source-agreements", "--disable-interactivity"])
+        .output()
+        .map_err(|e| format!("winget: {e}"))?;
+    Ok(parse_versions(&crate::sysutil::text(&out.stdout)))
+}
+
+/// `winget show --versions`: a "Version" title, a rule of dashes, then one version per line.
+pub fn parse_versions(text: &str) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().map(|l| l.rsplit('\r').next().unwrap_or("").trim()).collect();
+    let Some(rule) = lines.iter().position(|l| l.len() >= 3 && l.chars().all(|c| c == '-')) else { return Vec::new() };
+    lines[rule + 1..].iter().take_while(|l| !l.is_empty() && !l.contains(' ')).map(|l| l.to_string()).collect()
+}
+
+/// Put an earlier version back. The installer runs over the newer one, like a normal install.
+pub fn install_version(id: &str, version: &str) -> Result<(), String> {
+    if !valid_id(id) || version.is_empty() || version.len() > 64 || !version.chars().all(|c| c.is_ascii_alphanumeric() || "._-+".contains(c)) {
+        return Err("invalid package id or version".into());
+    }
+    let out = crate::sysutil::command("winget")
+        .args(["install", "--id", id, "--exact", "--version", version, "--force", "--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"])
+        .output()
+        .map_err(|e| format!("winget: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let text = crate::sysutil::text(&out.stdout);
+    let last = text.lines().map(|l| l.rsplit('\r').next().unwrap_or("").trim()).rfind(|l| l.len() > 3 && !l.chars().all(|c| "-\\|/ █▒".contains(c))).unwrap_or("");
+    Err(format!("{id} {version}: {}", if last.is_empty() { "install failed" } else { last }))
+}
+
+/// Roll the update recorded at `at` back to its previous version, optionally pinning the package
+/// so the next "update all" skips it.
+pub fn rollback(base: &std::path::Path, at: u64, pin: bool) -> Result<(), String> {
+    let mut all = history(base);
+    let Some(d) = all.iter_mut().find(|d| d.at == at) else { return Err("update not found".into()) };
+    // winget lists "< 1.2" or "Unknown" when it couldn't read the installed version
+    let from = d.from.trim_start_matches(['<', '>', ' ']).to_string();
+    if !from.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        return Err("the previous version is not known".into());
+    }
+    install_version(&d.id, &from)?;
+    if pin {
+        let _ = set_pin(&d.id, true);
+    }
+    d.rolled_back = true;
+    save_history(base, &all);
+    Ok(())
+}
+
+/// Pinned packages are left out of "upgrade all" (they can still be updated one by one).
+pub fn set_pin(id: &str, on: bool) -> Result<(), String> {
+    if !valid_id(id) {
+        return Err("invalid package id".into());
+    }
+    let args: &[&str] = if on { &["pin", "add", "--id", id, "--exact", "--force", "--accept-source-agreements", "--disable-interactivity"] } else { &["pin", "remove", "--id", id, "--exact", "--accept-source-agreements", "--disable-interactivity"] };
+    let out = crate::sysutil::command("winget").args(args).output().map_err(|e| format!("winget: {e}"))?;
+    if out.status.success() { Ok(()) } else { Err(format!("winget pin failed (exit {:#x})", out.status.code().unwrap_or(-1) as u32)) }
+}
+
+/// Ids of pinned packages.
+pub fn pins() -> Vec<String> {
+    let Ok(out) = crate::sysutil::command("winget").args(["pin", "list", "--accept-source-agreements", "--disable-interactivity"]).output() else { return Vec::new() };
+    parse(&crate::sysutil::text(&out.stdout)).into_iter().map(|u| u.id).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_version_lists() {
+        let text = "Found Git [Git.Git]\r\nVersion\r\n--------\r\n2.55.0.5\r\n2.54.0\r\n2.53.1\r\n";
+        assert_eq!(parse_versions(text), vec!["2.55.0.5", "2.54.0", "2.53.1"]);
+        assert!(parse_versions("No package found matching input criteria.").is_empty());
+    }
 
     const SAMPLE: &str = "   - \r   \\ \rName                         Id                         Version      Available    Source\n\
 ---------------------------------------------------------------------------------------------\n\

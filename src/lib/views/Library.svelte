@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { app } from '../store.svelte';
-  import { api, fmt, ago, type Game, type GameLeftover, type GameStatus } from '../api';
+  import { listen } from '@tauri-apps/api/event';
+  import { api, fmt, ago, type Game, type GameLeftover, type GameStatus, type GameUpdate } from '../api';
   import { t } from '../i18n.svelte';
   import { ask } from '../ask.svelte';
   import { failures } from '../sys';
@@ -18,11 +19,30 @@
   let sel = $state<Game | null>(null);
   let dlg: HTMLDialogElement;
 
+  let updates = $state<GameUpdate[]>([]);
   async function load() {
     games = await api.games.list().catch(e => { app.toast(String(e), 'error'); return []; });
     leftovers = await api.games.leftovers().catch(() => []);
+    updates = await api.games.updates().catch(() => []);
   }
-  onMount(() => { load(); api.gamemode.status().then(s => (status = s)).catch(() => {}); });
+  onMount(() => {
+    load();
+    api.gamemode.status().then(s => (status = s)).catch(() => {});
+    const off = listen('game-updates', () => api.games.updates().then(u => (updates = u)).catch(() => {}));
+    return () => { off.then(u => u()); };
+  });
+
+  async function cleanUpdate(u: GameUpdate) {
+    const ok = await ask({ title: t('upd2.confirm', { game: u.game }), text: t('upd2.confirmText'), ico: 'trash', confirm: t('lib.cleanN', { size: fmt(u.items.reduce((s, i) => s + i.size, 0)) }), items: u.items.map(i => ({ name: t('upd2.kind.' + i.kind), detail: `${fmt(i.size)} · ${i.path}` })) });
+    if (!ok) return;
+    try {
+      const out = await api.games.cleanUpdates(u.items.map(i => i.path));
+      app.toast(t('lib.cleaned', { size: fmt(out.freed) }), 'success');
+      failures(out.failed);
+      updates = await api.games.updates().catch(() => []);
+      await app.refreshDrives();
+    } catch (e) { app.toast(String(e), 'error'); }
+  }
 
   const DAY = 86400;
   let launchers = $derived([...new Set((games ?? []).map(g => g.launcher))]);
@@ -104,6 +124,30 @@
         </div>
       </button>
     {/each}
+  </section>
+{/if}
+
+{#if updates.length}
+  <section class="glass p-5 reveal" style="--i:2">
+    <div class="font-semibold flex items-center gap-2"><Icon name="upgrade" style="color:var(--color-accent)" />{t('upd2.title')}</div>
+    <div class="text-xs muted">{t('upd2.sub')}</div>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 mt-3">
+      {#each updates as u (u.game_id)}
+        {@const size = u.items.reduce((s, i) => s + i.size, 0)}
+        <div class="soft rounded-xl p-4">
+          <div class="flex items-center justify-between gap-2">
+            <div class="min-w-0">
+              <div class="text-sm font-medium truncate">{u.game}</div>
+              <div class="text-[11px] muted">{t('upd2.when', { ago: ago(u.at, true) })} · <span class="mono">{u.from} → {u.to}</span></div>
+            </div>
+            <button class="btn btn-xs btn-primary shrink-0" onclick={() => cleanUpdate(u)}>{t('lib.cleanN', { size: fmt(size) })}</button>
+          </div>
+          {#each u.items as i (i.path)}
+            <div class="flex justify-between gap-3 text-xs mt-2"><span class="truncate" title={i.path}>{t('upd2.kind.' + i.kind)}</span><span class="mono shrink-0">{fmt(i.size)}</span></div>
+          {/each}
+        </div>
+      {/each}
+    </div>
   </section>
 {/if}
 

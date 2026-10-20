@@ -193,6 +193,78 @@ fn steam() -> Vec<Game> {
     out
 }
 
+/// A game's installed build as the launcher records it, for noticing finished updates.
+#[derive(Clone, Debug)]
+pub struct BuildMark {
+    pub id: String,
+    pub name: String,
+    pub build: String,
+    /// The Steam library's steamapps folder (Steam only).
+    pub steamapps: Option<PathBuf>,
+    /// Steam app id or Epic app name.
+    pub app: String,
+}
+
+/// Installed builds of Steam and Epic games. Steam games that are still downloading are skipped,
+/// so an update is only seen once it has finished.
+pub fn build_marks() -> Vec<BuildMark> {
+    let mut out = Vec::new();
+    if let Ok(k) = hive(false).open_subkey(r"Software\Valve\Steam")
+        && let Ok(root) = k.get_value::<String, _>("SteamPath")
+    {
+        let root = PathBuf::from(root.replace('/', "\\"));
+        let mut libs = vec![root.clone()];
+        if let Ok(t) = std::fs::read_to_string(root.join(r"steamapps\libraryfolders.vdf"))
+            && let Some(lf) = parse_vdf(&t).get("libraryfolders")
+        {
+            for (_, lib) in lf.entries() {
+                if let Some(p) = lib.str("path") {
+                    let p = PathBuf::from(p.replace("\\\\", "\\"));
+                    if !libs.iter().any(|l| l.to_string_lossy().eq_ignore_ascii_case(&p.to_string_lossy())) {
+                        libs.push(p);
+                    }
+                }
+            }
+        }
+        for lib in libs {
+            let apps = lib.join("steamapps");
+            for e in std::fs::read_dir(&apps).into_iter().flatten().flatten() {
+                let n = e.file_name().to_string_lossy().into_owned();
+                if !(n.starts_with("appmanifest_") && n.ends_with(".acf")) {
+                    continue;
+                }
+                let Ok(t) = std::fs::read_to_string(e.path()) else { continue };
+                let v = parse_vdf(&t);
+                let Some(st) = v.get("AppState") else { continue };
+                let (Some(id), Some(name), Some(build)) = (st.str("appid"), st.str("name"), st.str("buildid")) else { continue };
+                // StateFlags 4 = fully installed, nothing pending
+                if steam_tool(id, name) || st.str("StateFlags") != Some("4") {
+                    continue;
+                }
+                out.push(BuildMark { id: format!("steam:{id}"), name: name.into(), build: build.into(), steamapps: Some(apps.clone()), app: id.into() });
+            }
+        }
+    }
+    let dir = sysutil::env_path("ProgramData").unwrap_or_else(|| PathBuf::from(r"C:\ProgramData")).join(r"Epic\EpicGamesLauncher\Data\Manifests");
+    #[derive(Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct Item {
+        display_name: Option<String>,
+        app_name: Option<String>,
+        app_version_string: Option<String>,
+        b_is_incomplete_install: Option<bool>,
+    }
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten().filter(|e| e.path().extension().is_some_and(|x| x == "item")) {
+        let Some(i) = std::fs::read(e.path()).ok().and_then(|b| serde_json::from_slice::<Item>(&b).ok()) else { continue };
+        let (Some(app), Some(build)) = (i.app_name, i.app_version_string) else { continue };
+        if i.b_is_incomplete_install.unwrap_or(false) {
+            continue;
+        }
+        out.push(BuildMark { id: format!("epic:{app}"), name: i.display_name.unwrap_or_else(|| app.clone()), build, steamapps: None, app });
+    }
+    out
+}
+
 fn epic() -> Vec<Game> {
     let dir = sysutil::env_path("ProgramData").unwrap_or_else(|| PathBuf::from(r"C:\ProgramData")).join(r"Epic\EpicGamesLauncher\Data\Manifests");
     #[derive(Deserialize)]

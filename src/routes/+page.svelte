@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { open } from '@tauri-apps/plugin-dialog';
   import { app, type View } from '$lib/store.svelte';
-  import { NAV_HOME, NAV_GROUPS, NAV_SETTINGS, NAV_ALL, groupOf, type NavGroup, type NavItem } from '$lib/nav';
+  import { NAV_TOP, NAV_GROUPS, NAV_SETTINGS, NAV_ALL, groupOf, type NavGroup, type NavItem } from '$lib/nav';
   import { api, ago, fmt, num } from '$lib/api';
   import { t, i18n } from '$lib/i18n.svelte';
   import Icon from '$lib/Icon.svelte';
@@ -44,6 +44,13 @@
   import Drivers from '$lib/views/Drivers.svelte';
   import WinUpdate from '$lib/views/WinUpdate.svelte';
   import Report from '$lib/views/Report.svelte';
+  import Slow from '$lib/views/Slow.svelte';
+  import Wake from '$lib/views/Wake.svelte';
+  import Graphics from '$lib/views/Graphics.svelte';
+  import Benchmark from '$lib/views/Benchmark.svelte';
+  import Backup from '$lib/views/Backup.svelte';
+  import Home from '$lib/views/Home.svelte';
+  import MultiPc from '$lib/views/MultiPc.svelte';
   import Overlay from '$lib/windows/Overlay.svelte';
   import Widget from '$lib/windows/Widget.svelte';
   import Prompt from '$lib/windows/Prompt.svelte';
@@ -58,7 +65,7 @@
     optimizer: Optimizer, startup: Startup, background: Background, internet: Internet,
     uninstaller: Uninstaller, updater: Updater, health: DiskHealth, settings: Settings,
     gamemode: GameMode, library: Library, fps: Fps, display: Display, temps: Temps, battery: BatteryView, crashes: Crashes,
-    security: SecurityView, boot: Boot, drivers: Drivers, winupdate: WinUpdate, report: Report,
+    security: SecurityView, boot: Boot, drivers: Drivers, winupdate: WinUpdate, report: Report, slow: Slow, wake: Wake, graphics: Graphics, bench: Benchmark, backup: Backup, home: Home, multipc: MultiPc,
   };
   /** Pages that show the scanned drive; the header shows its path there and the drives list matters. */
   const DISK_VIEWS: View[] = ['overview', 'explorer', 'files', 'dupes', 'history', 'cleanup', 'shortcuts'];
@@ -150,7 +157,7 @@
       </div>
 
       <nav class="flex flex-col gap-1 lg:pl-2">
-        {@render item(NAV_HOME)}
+        {#each NAV_TOP as top (top.v)}{@render item(top)}{/each}
         {#each NAV_GROUPS as g (g.key)}
           {@const here = group?.key === g.key}
           {@const expanded = openGroup === g.key}

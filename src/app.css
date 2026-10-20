@@ -314,6 +314,9 @@ html.no-anim .scan-orb-lite { animation: spin 1.2s linear infinite !important; }
 /* Small frameless windows (FPS window, widget, boost prompt): transparent page, one glass card */
 html.small-window, html.small-window body { background: transparent !important; overflow: hidden; }
 .mini-win { margin: 4px; padding: .65rem .8rem; border-radius: 14px; background: color-mix(in oklch, var(--color-base-200) 88%, transparent); border: 1px solid var(--glass-border); backdrop-filter: blur(14px); box-shadow: 0 6px 24px -10px oklch(0% 0 0 / .6); height: calc(100vh - 8px); box-sizing: border-box; cursor: default; overflow: hidden; }
+/* The FPS window sizes itself to its content; the native window is fitted around it */
+.mini-win.mini-fit { height: auto; width: 228px; display: inline-block; vertical-align: top; }
+.mini-win.mini-fit.compact { width: auto; padding: .35rem .7rem; border-radius: 10px; }
 .mini-x { margin-left: .4rem; width: 1.15rem; height: 1.15rem; line-height: 1rem; border-radius: 6px; color: var(--muted); font-size: .95rem; }
 .mini-x:hover { background: color-mix(in oklch, var(--color-base-content) 10%, transparent); color: var(--color-base-content); }
 .prompt-win { position: relative; }
@@ -344,6 +347,21 @@ html.small-window, html.small-window body { background: transparent !important; 
 .hotkey:focus { border-color: var(--color-primary); }
 
 /* Big metric with a label underneath (dashboards) */
+/* Home dashboard tiles */
+.home-tile { cursor: pointer; transition: transform .25s cubic-bezier(.2,.8,.2,1), box-shadow .25s; }
+.home-tile:not(.editing):hover { transform: translateY(-3px); box-shadow: 0 14px 34px -18px color-mix(in oklch, var(--color-primary) 60%, transparent); }
+.home-tile.wide { grid-column: span 2; }
+.home-tile.editing { cursor: grab; outline: 1px dashed color-mix(in oklch, var(--color-primary) 45%, transparent); outline-offset: -6px; }
+@media (max-width: 640px) { .home-tile.wide { grid-column: span 1; } }
+
+/* FPS window corner picker: a tiny screen with four clickable corners */
+.ov-screen { position: relative; width: 150px; height: 92px; border-radius: 10px; border: 1px solid var(--glass-border); background: linear-gradient(135deg, color-mix(in oklch, var(--color-primary) 14%, transparent), color-mix(in oklch, var(--color-accent) 10%, transparent)); }
+.ov-screen::after { content: ""; position: absolute; left: 50%; bottom: -9px; width: 40px; height: 5px; margin-left: -20px; border-radius: 3px; background: var(--glass-border); }
+.ov-corner { position: absolute; width: 38px; height: 22px; border-radius: 6px; border: 1px dashed color-mix(in oklch, var(--color-base-content) 30%, transparent); background: color-mix(in oklch, var(--color-base-content) 4%, transparent); transition: background .2s, border-color .2s; }
+.ov-corner:hover { border-color: var(--color-primary); }
+.ov-corner.on { background: var(--color-primary); border: 1px solid var(--color-primary); box-shadow: 0 4px 14px -4px var(--color-primary); }
+.ov-corner.tl { left: 6px; top: 6px; } .ov-corner.tr { right: 6px; top: 6px; }
+.ov-corner.bl { left: 6px; bottom: 6px; } .ov-corner.br { right: 6px; bottom: 6px; }
 .metric { display: flex; flex-direction: column; gap: .15rem; min-width: 0; }
 .metric > b { font-family: "Cascadia Mono", "Geist Mono", ui-monospace, Consolas, monospace; font-variant-numeric: tabular-nums; font-size: 1.6rem; line-height: 1.1; font-weight: 700; }
 .metric > span { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

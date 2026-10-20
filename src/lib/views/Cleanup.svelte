@@ -9,6 +9,7 @@
   import { failures, rpNote } from '../sys';
   import { IS_WINDOWS } from '../nav';
   import Icon from '../Icon.svelte';
+  import JunkRules from '../JunkRules.svelte';
 
   // ---- system junk: known places, no drive scan needed ----
   const SYS_ICO: Record<string, string> = { user_temp: 'cache', win_temp: 'cache', thumbs: 'image', crash: 'alert', shaders: 'game', wu_cache: 'download', recycle: 'trash', logs: 'doc', app_cache: 'cache', old_downloads: 'download' };
@@ -87,8 +88,9 @@
 
   // Rules are defined in Rust with English text; the UI translates them by key and falls back to that text
   const tr = (key: string, fallback: string) => { const s = t(key); return s === key ? fallback : s; };
-  const label = (g: JunkGroup) => tr(`junk.${g.key}`, g.label);
-  const hint = (g: JunkGroup) => tr(`junk.${g.key}.hint`, g.hint);
+  // The user's own rules carry their own name and pattern
+  const label = (g: JunkGroup) => (g.key.startsWith('custom:') ? g.label : tr(`junk.${g.key}`, g.label));
+  const hint = (g: JunkGroup) => (g.key.startsWith('custom:') ? `${t('rules.yours')} · ${g.hint}` : tr(`junk.${g.key}.hint`, g.hint));
 
   function toggle(k: string) { const s = new Set(on); s.has(k) ? s.delete(k) : s.add(k); on = s; }
   function clean(ev: MouseEvent) {
@@ -222,3 +224,5 @@
     </div>
   </section>
 {/if}
+
+<JunkRules onsaved={() => api.junk().then(g => { groups = g; on = new Set(g.filter(x => x.safe || on.has(x.key)).map(x => x.key)); }).catch(() => {})} />

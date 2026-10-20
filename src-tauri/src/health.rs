@@ -345,6 +345,90 @@ pub struct BootInfo {
     pub slow: Vec<(String, u64)>,
     /// The boot performance log needs administrator rights.
     pub needs_admin: bool,
+    /// Per boot, the apps, drivers and services Windows measured as slowing it, newest first.
+    #[serde(default)]
+    pub runs: Vec<BootRun>,
+    /// Startup apps running now and how long after the last boot each one started.
+    #[serde(default)]
+    pub startup: Vec<StartupTiming>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct BootRun {
+    pub at: u64,
+    pub total: u64,
+    pub main: u64,
+    pub post: u64,
+    /// (name, delay ms, kind: app, driver, service, other)
+    pub items: Vec<(String, u64, String)>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct StartupTiming {
+    /// Startup entry id on the Startup page.
+    pub id: String,
+    pub name: String,
+    /// Seconds after boot the process started.
+    pub after: u64,
+    pub memory: u64,
+}
+
+/// Group the per-item boot degradation events with the boot they were logged for: Windows writes
+/// them within a few minutes of that boot's summary event.
+pub fn group_boot_runs(boots: &[(u64, u64, u64, u64)], items: &[(String, u64, u64, u32)]) -> Vec<BootRun> {
+    boots
+        .iter()
+        .take(12)
+        .map(|&(at, total, main, post)| {
+            let mut list: Vec<(String, u64, String)> = Vec::new();
+            for (name, ms, _, id) in items.iter().filter(|i| i.2.abs_diff(at) <= 600) {
+                let kind = match id {
+                    101 => "app",
+                    102 | 106 => "driver",
+                    103 | 109 => "service",
+                    _ => "other",
+                };
+                match list.iter_mut().find(|l| &l.0 == name) {
+                    Some(l) => l.1 = l.1.max(*ms),
+                    None => list.push((name.clone(), *ms, kind.to_string())),
+                }
+            }
+            list.sort_by_key(|l| std::cmp::Reverse(l.1));
+            list.truncate(8);
+            BootRun { at, total, main, post, items: list }
+        })
+        .collect()
+}
+
+/// Startup apps that are running now, with how long after boot they started.
+#[cfg(windows)]
+fn startup_timings() -> Vec<StartupTiming> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    let boot = System::boot_time();
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing().with_memory());
+    let mut out: Vec<StartupTiming> = Vec::new();
+    for app in crate::optimizer::startup_list().into_iter().filter(|a| a.enabled) {
+        let Some(exe) = exe_of_command(&app.command) else { continue };
+        let procs: Vec<_> = sys.processes().values().filter(|p| p.name().to_string_lossy().eq_ignore_ascii_case(&exe)).collect();
+        let Some(first) = procs.iter().map(|p| p.start_time()).min() else { continue };
+        // Started long after boot means it was opened by hand, not by the startup entry
+        if first < boot || first - boot > 1800 {
+            continue;
+        }
+        out.push(StartupTiming { id: app.id, name: app.name, after: first - boot, memory: procs.iter().map(|p| p.memory()).sum() });
+    }
+    out.sort_by_key(|s| s.after);
+    out
+}
+
+/// The executable file name of a Run-key command line (`"C:\x\app.exe" --min` → `app.exe`).
+pub fn exe_of_command(cmd: &str) -> Option<String> {
+    let c = cmd.trim();
+    let path = if let Some(rest) = c.strip_prefix('"') { rest.split('"').next()? } else { c.split(".exe").next().map(|p| p.trim())? };
+    let path = if path.to_lowercase().ends_with(".exe") { path.to_string() } else { format!("{path}.exe") };
+    let name = path.rsplit(['\\', '/']).next()?.to_string();
+    (name.len() > 4).then_some(name)
 }
 
 #[cfg(windows)]
@@ -353,7 +437,7 @@ pub fn boot_info() -> BootInfo {
     struct Raw {
         last: Option<i64>,
         boots: Option<Vec<Vec<i64>>>,
-        slow: Option<Vec<(String, i64)>>,
+        slow: Option<Vec<(String, i64, i64, i64)>>,
         denied: Option<bool>,
     }
     let script = r#"$last = $null; try { $last = [int64]([DateTimeOffset](Get-CimInstance Win32_OperatingSystem).LastBootUpTime).ToUnixTimeSeconds() } catch {}
@@ -362,27 +446,31 @@ try {
   $ev = Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Diagnostics-Performance/Operational'; Id=100} -MaxEvents 30 -ErrorAction Stop
   foreach ($e in $ev) { $x = [xml]$e.ToXml(); $d = @{}; $x.Event.EventData.Data | ForEach-Object { $d[$_.Name] = $_.'#text' }
     $boots += ,@([int64]([DateTimeOffset]$e.TimeCreated).ToUnixTimeSeconds(), [int64]$d['BootTime'], [int64]$d['MainPathBootTime'], [int64]$d['BootPostBootTime']) }
-  $apps = Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Diagnostics-Performance/Operational'; Id=101,102,103,106,109} -MaxEvents 40 -ErrorAction SilentlyContinue
+  $apps = Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Diagnostics-Performance/Operational'; Id=101,102,103,106,109} -MaxEvents 200 -ErrorAction SilentlyContinue
   foreach ($e in $apps) { $x = [xml]$e.ToXml(); $d = @{}; $x.Event.EventData.Data | ForEach-Object { $d[$_.Name] = $_.'#text' }
     $name = if ($d['FriendlyName']) { $d['FriendlyName'] } elseif ($d['Name']) { $d['Name'] } else { $d['FileName'] }
-    if ($name) { $slow += ,@("$name", [int64]$d['TotalTime']) } }
+    if ($name) { $slow += ,@("$name", [int64]$d['TotalTime'], [int64]([DateTimeOffset]$e.TimeCreated).ToUnixTimeSeconds(), [int64]$e.Id) } }
 } catch [System.UnauthorizedAccessException] { $denied = $true } catch { if ("$_" -match 'denied|unauthorized') { $denied = $true } }
 ConvertTo-Json -Compress -Depth 4 -InputObject @([pscustomobject]@{ last = $last; boots = $boots; slow = $slow; denied = $denied })"#;
     let r = powershell::<Vec<Raw>>(script).ok().and_then(|v| v.into_iter().next());
     let Some(r) = r else { return BootInfo::default() };
+    let items: Vec<(String, u64, u64, u32)> = r.slow.unwrap_or_default().into_iter().map(|(n, ms, at, id)| (n, ms.max(0) as u64, at.max(0) as u64, id as u32)).collect();
     let mut slow: Vec<(String, u64)> = Vec::new();
-    for (n, ms) in r.slow.unwrap_or_default() {
-        match slow.iter_mut().find(|s| s.0 == n) {
-            Some(s) => s.1 = s.1.max(ms.max(0) as u64),
-            None => slow.push((n, ms.max(0) as u64)),
+    for (n, ms, _, _) in &items {
+        match slow.iter_mut().find(|s| &s.0 == n) {
+            Some(s) => s.1 = s.1.max(*ms),
+            None => slow.push((n.clone(), *ms)),
         }
     }
     slow.sort_by_key(|s| std::cmp::Reverse(s.1));
     slow.truncate(10);
     let history_empty = r.boots.as_ref().is_none_or(|b| b.is_empty());
+    let history: Vec<(u64, u64, u64, u64)> = r.boots.unwrap_or_default().into_iter().filter(|b| b.len() == 4).map(|b| (b[0] as u64, b[1].max(0) as u64, b[2].max(0) as u64, b[3].max(0) as u64)).collect();
     BootInfo {
         last_boot: r.last.map(|t| t as u64),
-        history: r.boots.unwrap_or_default().into_iter().filter(|b| b.len() == 4).map(|b| (b[0] as u64, b[1].max(0) as u64, b[2].max(0) as u64, b[3].max(0) as u64)).collect(),
+        runs: group_boot_runs(&history, &items),
+        startup: startup_timings(),
+        history,
         slow,
         // The boot log is admin-only; its "access denied" message is localized, so an empty result
         // without admin rights is treated the same way
@@ -468,5 +556,16 @@ mod tests {
         assert_eq!(explain("game.exe"), None);
         assert!(bugcheck_name(0x116).unwrap().contains("VIDEO_TDR"));
         assert_eq!(nvidia_version("32.0.15.6636").as_deref(), Some("566.36"));
+    }
+
+    #[test]
+    fn groups_boot_items_and_reads_run_commands() {
+        let boots = [(10_000, 40_000, 20_000, 20_000), (100_000, 30_000, 15_000, 15_000)];
+        let items = vec![("Discord".to_string(), 4000, 10_100, 101), ("Discord".to_string(), 6000, 10_200, 101), ("nvlddmkm".to_string(), 900, 99_900, 102)];
+        let runs = group_boot_runs(&boots, &items);
+        assert_eq!(runs[0].items, vec![("Discord".to_string(), 6000, "app".to_string())]);
+        assert_eq!(runs[1].items, vec![("nvlddmkm".to_string(), 900, "driver".to_string())]);
+        assert_eq!(exe_of_command(r#""C:\Program Files\Steam\steam.exe" -silent"#).as_deref(), Some("steam.exe"));
+        assert_eq!(exe_of_command(r"C:\Tools\sync.exe /min").as_deref(), Some("sync.exe"));
     }
 }

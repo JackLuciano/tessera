@@ -1,14 +1,15 @@
-import { api, type Drive, type ScanSummary, type Prefs, fmt } from './api';
+import { api, type Drive, type ScanSummary, type Prefs, fmt, OVERLAY_DEFAULT } from './api';
 import { listen } from '@tauri-apps/api/event';
 import { t } from './i18n.svelte';
 
 export type View =
   | 'care'
-  | 'gamemode' | 'library' | 'fps' | 'display'
+  | 'gamemode' | 'library' | 'graphics' | 'fps' | 'display'
   | 'overview' | 'explorer' | 'files' | 'dupes' | 'history'
   | 'cleanup' | 'privacy' | 'registry' | 'shortcuts' | 'shredder'
   | 'optimizer' | 'startup' | 'background' | 'internet'
-  | 'temps' | 'health' | 'battery' | 'crashes' | 'security' | 'boot'
+  | 'bench' | 'backup' | 'home' | 'multipc'
+  | 'slow' | 'temps' | 'health' | 'battery' | 'crashes' | 'security' | 'boot' | 'wake'
   | 'uninstaller' | 'updater' | 'drivers' | 'winupdate' | 'report'
   | 'settings';
 export { IS_WINDOWS } from './nav';
@@ -59,13 +60,14 @@ class AppStore {
   prefs = $state<Prefs>({
     close_to_tray: true, tray_meter: true, tray_hint_shown: false, widget: false, widget_on_top: true, hotkeys_enabled: true,
     hotkeys: { fps: 'Ctrl+Shift+F', boost: 'Ctrl+Shift+B', care: 'Ctrl+Shift+C', widget: 'Ctrl+Shift+W' }, weekly: true,
+    overlay: { ...OVERLAY_DEFAULT },
   });
 
   get drive() { return this.drives.find(d => this.target.toUpperCase().startsWith(d.mount.toUpperCase())) ?? null; }
 
   async init() {
     // Merged over the defaults: prefs saved by an older version lack the newer fields
-    api.prefs().then(p => (this.prefs = { ...this.prefs, ...p, hotkeys: { ...this.prefs.hotkeys, ...(p?.hotkeys ?? {}) } })).catch(() => {});
+    api.prefs().then(p => (this.prefs = { ...this.prefs, ...p, hotkeys: { ...this.prefs.hotkeys, ...(p?.hotkeys ?? {}) }, overlay: { ...OVERLAY_DEFAULT, ...(p?.overlay ?? {}) } })).catch(() => {});
     this.sendTrayLabels();
     // Restore points can take half a minute; say why the button is still spinning
     await listen<string>('restore-point', () => this.toast(t('rp.creating'), 'info'));
@@ -116,7 +118,7 @@ class AppStore {
 
   /** Tray menu and notification texts follow the UI language. */
   sendTrayLabels() {
-    const keys = ['open', 'care', 'quit', 'cpu', 'ram', 'hidden_title', 'hidden_body', 'care_title', 'care_body', 'care_clean', 'care_cleaned', 'widget', 'boost_title', 'boost_body', 'weekly_title', 'weekly_body'];
+    const keys = ['open', 'care', 'quit', 'cpu', 'ram', 'hidden_title', 'hidden_body', 'care_title', 'care_body', 'care_clean', 'care_cleaned', 'widget', 'boost_title', 'boost_body', 'weekly_title', 'weekly_body', 'update_title', 'update_body', 'backup_title', 'backup_body'];
     api.trayLabels(Object.fromEntries(keys.map(k => [k, t('tray.' + k)]))).catch(() => {});
   }
 

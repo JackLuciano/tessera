@@ -54,6 +54,12 @@
   function removeFrom(list: 'close' | 'keep', id: string) {
     if (cfg) save({ [list]: cfg[list].filter(x => x !== id) } as Partial<GameModeConfig>);
   }
+  let addNet = $state('');
+  function addNetApp() {
+    const id = addNet.trim().toLowerCase().replace(/\.exe$/, '');
+    if (cfg && id && !cfg.net_apps.includes(id)) save({ net_apps: [...cfg.net_apps, id] });
+    addNet = '';
+  }
 
   const boostOf = (g: Game) => cfg?.per_game[g.id]?.boost ?? 'default';
   function setBoost(g: Game, v: string) {
@@ -188,6 +194,40 @@
           {/each}
         </div>
       {/if}
+    </div>
+  </section>
+
+  <section class="glass p-5 reveal" style="--i:4">
+    <div class="flex items-start justify-between gap-3 flex-wrap">
+      <div class="flex items-start gap-3">
+        <span class="status-ico" style="background:color-mix(in oklch,var(--color-secondary) 14%,transparent);color:var(--color-secondary)"><Icon name="network" size="1.05rem" /></span>
+        <div>
+          <div class="font-semibold flex items-center gap-2">{t('net.title')}<span class="tag tag-warn"><Icon name="shield" size=".6rem" /></span></div>
+          <div class="text-xs muted max-w-2xl">{t('net.sub')}</div>
+        </div>
+      </div>
+      <label class="flex items-center gap-2 text-sm"><input type="checkbox" class="toggle toggle-primary" checked={cfg.net_limit} onchange={e => save({ net_limit: (e.target as HTMLInputElement).checked })} />{t('gm.enabled')}</label>
+    </div>
+    <div class="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_260px] gap-6 mt-4" class:opacity-50={!cfg.net_limit}>
+      <div>
+        <div class="text-xs uppercase tracking-wider font-semibold muted">{t('net.apps')}</div>
+        <div class="flex flex-wrap gap-1.5 mt-2">
+          {#each cfg.net_apps as id (id)}
+            <span class="chip-soft gap-1">{appName(id)}<button class="opacity-60 hover:opacity-100" onclick={() => save({ net_apps: cfg!.net_apps.filter(x => x !== id) })} aria-label="remove">×</button></span>
+          {/each}
+        </div>
+        <div class="flex gap-2 mt-2 max-w-md">
+          <input class="input input-sm flex-1" list="running-apps" placeholder={t('gm.addPlaceholder')} bind:value={addNet} onkeydown={e => e.key === 'Enter' && addNetApp()} />
+          <button class="btn btn-sm" disabled={!addNet.trim()} onclick={addNetApp}><Icon name="plus" size=".9rem" /></button>
+        </div>
+      </div>
+      <div class="flex flex-col gap-4">
+        <label class="block">
+          <div class="flex justify-between text-[11px] muted mb-1"><span>{t('net.cap')}</span><span class="mono">{cfg.net_mbps} Mbit/s</span></div>
+          <input type="range" class="range range-primary range-xs" min="1" max="50" step="1" value={cfg.net_mbps} onchange={e => save({ net_mbps: +(e.target as HTMLInputElement).value })} />
+        </label>
+        <label class="flex items-start gap-2 text-sm"><input type="checkbox" class="checkbox checkbox-primary checkbox-sm mt-0.5" checked={cfg.net_updates} onchange={e => save({ net_updates: (e.target as HTMLInputElement).checked })} /><span>{t('net.updates')}<span class="block text-[11px] muted">{t('net.updatesHint')}</span></span></label>
+      </div>
     </div>
   </section>
 
