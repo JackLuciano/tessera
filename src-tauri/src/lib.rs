@@ -65,6 +65,18 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// Hand memory the allocator is holding for reuse back to the OS right away.
+pub(crate) fn return_memory() {
+    // SAFETY: mi_collect only walks the allocator's own free lists
+    unsafe { libmimalloc_sys::mi_collect(true) };
+}
+
+/// How long the main window stays in the tray before the scan tree is let go.
+const RELEASE_AFTER: Duration = Duration::from_secs(120);
+
 pub(crate) struct AppState {
     tree: Mutex<Option<Tree>>,
     progress: Mutex<Option<Arc<Progress>>>,
@@ -81,6 +93,8 @@ pub(crate) struct AppState {
     pub(crate) tray: Mutex<Option<tray::TrayItems>>,
     /// Started by a scheduled Care run (`--care`): the window stays hidden until opened.
     hidden_start: AtomicBool,
+    /// Bumped on every hide and show of the main window, so a pending tree release can tell it's stale.
+    pub(crate) hide_epoch: AtomicU64,
 }
 
 impl Default for AppState {
@@ -98,8 +112,58 @@ impl Default for AppState {
             labels: Mutex::default(),
             tray: Mutex::default(),
             hidden_start: AtomicBool::new(false),
+            hide_epoch: AtomicU64::new(0),
         }
     }
+}
+
+/// The main window went to the tray. A full scan tree is easily a few hundred MB, so once it has
+/// stayed hidden for a while the tree is saved and dropped; the window reloads the saved scan
+/// (with catch-up) when it comes back (`tree-released`).
+pub(crate) fn release_when_hidden(app: &AppHandle) {
+    let epoch = app.state::<AppState>().hide_epoch.fetch_add(1, Ordering::Relaxed) + 1;
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(RELEASE_AFTER);
+        let st = app.state::<AppState>();
+        let hidden = app.get_webview_window("main").is_some_and(|w| !w.is_visible().unwrap_or(true));
+        let busy = st.progress.lock().is_some() || st.dup_progress.lock().is_some();
+        if st.hide_epoch.load(Ordering::Relaxed) != epoch || !hidden || busy {
+            return;
+        }
+        release_tree(&app, &st);
+    });
+}
+
+fn release_tree(app: &AppHandle, st: &AppState) {
+    let Ok(base) = app.path().app_data_dir() else { return };
+    let Some(root) = st.tree.lock().as_ref().map(|t| t.root_path.clone()) else { return };
+    // Position before the watcher stops: anything after it is caught up when the scan reopens
+    let meta = cache::Meta { saved_at: cache::now(), journal: journal_position(&root) };
+    *st.watch.lock() = None;
+    let generation = st.generation.load(Ordering::Relaxed);
+    let Some(raw) = st.tree.lock().as_ref().map(|t| cache::encode(t, &meta)) else { return };
+    let root_str = root.to_string_lossy().into_owned();
+    if let Err(e) = cache::write(&base, &root_str, &raw) {
+        // Without a saved copy the tree can't come back, so keep it
+        eprintln!("could not save the scan cache, keeping the tree in memory: {e}");
+        start_watch(app, st);
+        return;
+    }
+    drop(raw);
+    let old = {
+        let mut g = st.tree.lock();
+        // A scan or reload replaced the tree meanwhile: that one is not the one just saved
+        if st.generation.load(Ordering::Relaxed) != generation {
+            return;
+        }
+        st.generation.fetch_add(1, Ordering::Relaxed);
+        g.take()
+    };
+    // Millions of nodes take a moment to free; not under the lock
+    drop(old);
+    return_memory();
+    let _ = app.emit("tree-released", root_str);
 }
 
 #[derive(Serialize, Clone)]

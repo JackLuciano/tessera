@@ -202,6 +202,14 @@ fn decode(raw: &[u8]) -> io::Result<(Tree, Meta)> {
         }
         nodes.push(n);
     }
+    // Size every children list exactly up front; growing them push by push wastes up to half
+    let mut counts = vec![0u32; nodes.len()];
+    for n in nodes.iter().skip(1) {
+        counts[n.parent as usize] += 1;
+    }
+    for (n, c) in nodes.iter_mut().zip(counts) {
+        n.children.reserve_exact(c as usize);
+    }
     // Children lists and folder totals: every node comes after its parent, so one reverse pass rolls up
     for i in (1..nodes.len()).rev() {
         let (size, files, dirs, cats, modified, is_dir, parent) = {
@@ -367,6 +375,32 @@ pub mod usn {
 mod tests {
     use super::*;
     use crate::scanner::{scan, Progress};
+
+    /// Memory a saved scan takes once loaded, and what is left after dropping it.
+    /// `cargo test --release memory_of_saved_scans -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn memory_of_saved_scans() {
+        let mem = || {
+            let pid = sysinfo::get_current_pid().unwrap();
+            let mut sys = sysinfo::System::new();
+            sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
+            let p = sys.process(pid).unwrap();
+            format!("working set {} MB, private {} MB", p.memory() >> 20, p.virtual_memory() >> 20)
+        };
+        let dir = PathBuf::from(std::env::var("APPDATA").unwrap()).join("com.tessera.app").join("scans");
+        println!("start: {}", mem());
+        for f in std::fs::read_dir(dir).unwrap().flatten() {
+            let mut raw = Vec::new();
+            lz4_flex::frame::FrameDecoder::new(BufReader::new(std::fs::File::open(f.path()).unwrap())).read_to_end(&mut raw).unwrap();
+            let (tree, _) = decode(&raw).unwrap();
+            drop(raw);
+            println!("{}: {} nodes, {}", tree.root_path.display(), tree.nodes.len(), mem());
+            drop(tree);
+            crate::return_memory();
+            println!("  dropped: {}", mem());
+        }
+    }
 
     #[test]
     fn round_trips_a_scan() {

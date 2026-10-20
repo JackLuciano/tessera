@@ -32,13 +32,24 @@ pub fn is_elevated() -> bool {
     File::open(format!("\\\\.\\{drive}")).is_ok()
 }
 
+/// One MFT record, kept small: a volume has millions of them. The name lives in a shared
+/// `names` buffer (`name_off..name_off + name_len`) instead of one heap string per record.
 struct Rec {
+    size: u64,
     parent: u32,
-    name: String,
+    name_off: u32,
+    /// Unix seconds; fits a u32 until 2106.
+    modified: u32,
+    name_len: u16,
     is_dir: bool,
     used: bool,
-    size: u64,
-    modified: u64,
+}
+
+impl Rec {
+    fn name<'a>(&self, names: &'a str) -> &'a str {
+        let start = self.name_off as usize;
+        &names[start..start + self.name_len as usize]
+    }
 }
 
 /// Apply the NTFS update-sequence fixups; returns false for a torn/corrupt record.
@@ -102,7 +113,8 @@ fn filetime_to_unix(ft: u64) -> u64 {
 }
 
 /// Parse one fixed-up record into `recs[idx]`, or add an extension record's data size to its base record.
-fn parse_record(rec: &[u8], idx: usize, recs: &mut [Rec], ext_size: &mut [u64]) {
+/// Names are appended to `names`; a better name found later in the same record is appended again.
+fn parse_record(rec: &[u8], idx: usize, recs: &mut [Rec], names: &mut String) {
     if &rec[0..4] != b"FILE" {
         return;
     }
@@ -113,7 +125,7 @@ fn parse_record(rec: &[u8], idx: usize, recs: &mut [Rec], ext_size: &mut [u64]) 
     let base = (u64le(rec, 0x20) & 0x0000_FFFF_FFFF_FFFF) as usize;
     let mut p = u16le(rec, 0x14) as usize;
     let mut best_ns = u8::MAX;
-    let r = &mut recs[idx];
+    let (mut size, mut modified, mut name) = (0u64, None, None);
     while p + 16 <= rec.len() {
         let ty = u32le(rec, p);
         if ty == 0xFFFF_FFFF {
@@ -130,7 +142,7 @@ fn parse_record(rec: &[u8], idx: usize, recs: &mut [Rec], ext_size: &mut [u64]) 
             0x10 if !non_res && base == 0 => {
                 let vo = u16le(a, 0x14) as usize;
                 if vo + 0x10 <= a.len() {
-                    r.modified = filetime_to_unix(u64le(a, vo + 0x08));
+                    modified = Some(filetime_to_unix(u64le(a, vo + 0x08)).min(u32::MAX as u64) as u32);
                 }
             }
             0x30 if !non_res && base == 0 => {
@@ -141,32 +153,46 @@ fn parse_record(rec: &[u8], idx: usize, recs: &mut [Rec], ext_size: &mut [u64]) 
                     let ns = v[65];
                     // Namespace 2 is the 8.3 DOS alias; prefer the long name
                     let rank = if ns == 2 { 3 } else { ns };
-                    if rank < best_ns && 66 + nlen * 2 <= v.len() {
+                    if rank < best_ns && 66 + nlen * 2 <= v.len() && names.len() < u32::MAX as usize - 1024 {
                         best_ns = rank;
-                        let units: Vec<u16> = (0..nlen).map(|i| u16le(v, 66 + i * 2)).collect();
-                        r.name = String::from_utf16_lossy(&units);
-                        r.parent = (u64le(v, 0) & 0x0000_FFFF_FFFF_FFFF) as u32;
+                        let start = names.len();
+                        let units = (0..nlen).map(|i| u16le(v, 66 + i * 2));
+                        names.extend(char::decode_utf16(units).map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER)));
+                        let parent = (u64le(v, 0) & 0x0000_FFFF_FFFF_FFFF) as u32;
+                        name = Some((start as u32, (names.len() - start) as u16, parent));
                     }
                 }
             }
             // Unnamed $DATA stream = the file's content
             0x80 if name_len == 0 => {
-                let size = if non_res {
+                size += if non_res {
                     // Only the first segment (starting VCN 0) carries the real size
                     if u64le(a, 0x10) == 0 { u64le(a, 0x30) } else { 0 }
                 } else {
                     u32le(a, 0x10) as u64
                 };
-                if base == 0 { r.size += size } else if base < ext_size.len() { ext_size[base] += size }
             }
             _ => {}
         }
         p += len;
     }
-    if base == 0 {
-        r.used = true;
-        r.is_dir = flags & 0x02 != 0;
+    if base != 0 {
+        // Extension record: only its data size matters, and it belongs to the base record
+        if let Some(b) = recs.get_mut(base) {
+            b.size += size;
+        }
+        return;
     }
+    let r = &mut recs[idx];
+    r.size += size;
+    if let Some(m) = modified {
+        r.modified = m;
+    }
+    if let Some((off, len, parent)) = name {
+        (r.name_off, r.name_len, r.parent) = (off, len, parent);
+    }
+    r.used = true;
+    r.is_dir = flags & 0x02 != 0;
 }
 
 pub fn scan(root: &Path, progress: &Progress) -> Res<Tree> {
@@ -216,8 +242,11 @@ pub fn scan(root: &Path, progress: &Progress) -> Res<Tree> {
     };
 
     let count = (mft_size / rec_size as u64) as usize;
-    let mut recs: Vec<Rec> = (0..count).map(|_| Rec { parent: NO_PARENT, name: String::new(), is_dir: false, used: false, size: 0, modified: 0 }).collect();
-    let mut ext_size = vec![0u64; count];
+    let mut recs: Vec<Rec> = (0..count)
+        .map(|_| Rec { size: 0, parent: NO_PARENT, name_off: 0, modified: 0, name_len: 0, is_dir: false, used: false })
+        .collect();
+    // All names back to back; roughly 20 bytes per record on a typical system drive
+    let mut names = String::with_capacity(count * 20);
 
     // Read the MFT run by run in large chunks, parsing records as they stream in
     let mut idx = 0usize;
@@ -241,7 +270,7 @@ pub fn scan(root: &Path, progress: &Progress) -> Res<Tree> {
                     break;
                 }
                 if fixup(rec) {
-                    parse_record(rec, idx, &mut recs, &mut ext_size);
+                    parse_record(rec, idx, &mut recs, &mut names);
                     let r = &recs[idx];
                     if r.used {
                         if r.is_dir { dirs += 1 } else { files += 1; bytes += r.size }
@@ -259,24 +288,40 @@ pub fn scan(root: &Path, progress: &Progress) -> Res<Tree> {
             }
         }
     }
-    for (r, extra) in recs.iter_mut().zip(&ext_size) {
-        r.size += extra;
-    }
+    drop(buf);
 
-    build_tree(root, recs, progress, started)
+    build_tree(root, recs, &names, progress, started)
 }
 
 /// Turn the flat record table into the same arena layout the directory walker produces.
-fn build_tree(root: &Path, recs: Vec<Rec>, progress: &Progress, started: std::time::Instant) -> Res<Tree> {
+fn build_tree(root: &Path, recs: Vec<Rec>, names: &str, progress: &Progress, started: std::time::Instant) -> Res<Tree> {
     if recs.len() <= ROOT_RECORD || !recs[ROOT_RECORD].used {
         return Err("root directory record missing".into());
     }
-    let mut kids: Vec<Vec<u32>> = vec![Vec::new(); recs.len()];
+    // Children of every record as one flat list: kids[start[p]..start[p + 1]] are p's children.
+    // One Vec per record would be millions of small allocations.
+    let is_child = |i: usize, r: &Rec| {
+        i != ROOT_RECORD && r.used && r.name_len > 0 && (r.parent as usize) < recs.len() && recs[r.parent as usize].is_dir
+    };
+    let mut start = vec![0u32; recs.len() + 1];
     for (i, r) in recs.iter().enumerate() {
-        if i != ROOT_RECORD && r.used && !r.name.is_empty() && (r.parent as usize) < recs.len() && recs[r.parent as usize].is_dir {
-            kids[r.parent as usize].push(i as u32);
+        if is_child(i, r) {
+            start[r.parent as usize + 1] += 1;
         }
     }
+    for i in 1..start.len() {
+        start[i] += start[i - 1];
+    }
+    let mut kids = vec![0u32; start[recs.len()] as usize];
+    let mut fill = start.clone();
+    for (i, r) in recs.iter().enumerate() {
+        if is_child(i, r) {
+            let p = r.parent as usize;
+            kids[fill[p] as usize] = i as u32;
+            fill[p] += 1;
+        }
+    }
+    drop(fill);
 
     let mut nodes: Vec<Node> = Vec::with_capacity(recs.len() / 3);
     let new_node = |name: String, parent: u32, kind: Kind| Node {
@@ -284,46 +329,48 @@ fn build_tree(root: &Path, recs: Vec<Rec>, progress: &Progress, started: std::ti
     };
     nodes.push(new_node(root.to_string_lossy().into_owned(), NO_PARENT, Kind::Dir));
 
-    // Breadth-first: every parent gets a smaller arena index than its children
-    let mut queue: std::collections::VecDeque<(usize, u32, String)> = std::collections::VecDeque::new();
-    queue.push_back((ROOT_RECORD, 0, root.to_string_lossy().to_lowercase()));
+    // Depth-first with an explicit stack: a node gets its index when its parent is expanded, so every
+    // parent still has a smaller arena index than its children, and only the folders along the
+    // current path (plus their pending siblings) hold a path string at any time.
+    let mut stack: Vec<(usize, u32, String)> = vec![(ROOT_RECORD, 0, root.to_string_lossy().to_lowercase())];
     let mut visited = vec![false; recs.len()];
     visited[ROOT_RECORD] = true;
     let (mut files, mut bytes) = (0u64, 0u64);
-    while let Some((rec_id, node_id, path_lower)) = queue.pop_front() {
+    while let Some((rec_id, node_id, path_lower)) = stack.pop() {
         let mut bucket = new_node(String::new(), node_id, Kind::Bucket);
-        for &k in &kids[rec_id] {
+        for &k in &kids[start[rec_id] as usize..start[rec_id + 1] as usize] {
             let k = k as usize;
             if visited[k] {
                 continue;
             }
             visited[k] = true;
             let r = &recs[k];
+            let name = r.name(names);
             if r.is_dir {
                 let id = nodes.len() as u32;
-                let mut n = new_node(r.name.clone(), node_id, Kind::Dir);
-                n.modified = r.modified;
+                let mut n = new_node(name.to_owned(), node_id, Kind::Dir);
+                n.modified = r.modified as u64;
                 nodes.push(n);
                 nodes[node_id as usize].children.push(id);
-                queue.push_back((k, id, format!("{path_lower}\\{}", r.name.to_lowercase())));
+                stack.push((k, id, format!("{path_lower}\\{}", name.to_lowercase())));
             } else {
                 files += 1;
                 bytes += r.size;
-                let cat = Cat::classify(&r.name, &path_lower) as usize;
+                let cat = Cat::classify(name, &path_lower) as usize;
                 if r.size >= FILE_NODE_MIN {
                     let id = nodes.len() as u32;
-                    let mut n = new_node(r.name.clone(), node_id, Kind::File);
+                    let mut n = new_node(name.to_owned(), node_id, Kind::File);
                     n.size = r.size;
                     n.files = 1;
                     n.cats[cat] = r.size;
-                    n.modified = r.modified;
+                    n.modified = r.modified as u64;
                     nodes.push(n);
                     nodes[node_id as usize].children.push(id);
                 } else {
                     bucket.size += r.size;
                     bucket.files += 1;
                     bucket.cats[cat] += r.size;
-                    bucket.modified = bucket.modified.max(r.modified);
+                    bucket.modified = bucket.modified.max(r.modified as u64);
                 }
             }
         }
@@ -334,6 +381,8 @@ fn build_tree(root: &Path, recs: Vec<Rec>, progress: &Progress, started: std::ti
             nodes[node_id as usize].children.push(id);
         }
     }
+    // The record table is the biggest allocation of the scan; free it before the roll-up
+    drop((recs, kids, start, visited));
     // Final, reachable-only totals (orphaned records are excluded)
     progress.bytes.store(bytes, Ordering::Relaxed);
     progress.files.store(files, Ordering::Relaxed);
@@ -357,8 +406,11 @@ fn build_tree(root: &Path, recs: Vec<Rec>, progress: &Progress, started: std::ti
     for i in 0..nodes.len() {
         let mut ch = std::mem::take(&mut nodes[i].children);
         ch.sort_by_key(|c| std::cmp::Reverse(nodes[*c as usize].size));
+        // Pushing one by one leaves up to half of each list as spare capacity
+        ch.shrink_to_fit();
         nodes[i].children = ch;
     }
+    nodes.shrink_to_fit();
 
     Ok(Tree { nodes, root_path: root.to_path_buf(), elapsed_ms: started.elapsed().as_millis() as u64, errors: 0 })
 }

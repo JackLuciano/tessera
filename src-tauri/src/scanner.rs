@@ -243,6 +243,7 @@ pub fn scan(root: &Path, progress: &Progress) -> Tree {
     let scanned = walk(root, root_name, progress);
     let mut nodes = Vec::with_capacity(1 << 16);
     flatten(scanned, NO_PARENT, &mut nodes);
+    nodes.shrink_to_fit();
     Tree {
         nodes,
         root_path: root.to_path_buf(),
