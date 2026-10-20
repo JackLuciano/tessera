@@ -10,6 +10,10 @@ export interface NavGroup { key: string; ico: string; items: NavItem[] }
 export const NAV_HOME: NavItem = { v: 'care', ico: 'heart' };
 
 export const NAV_GROUPS: NavGroup[] = [
+  ...(IS_WINDOWS ? [{ key: 'gaming', ico: 'game', items: [
+    { v: 'gamemode' as View, ico: 'rocket' }, { v: 'library' as View, ico: 'app' },
+    { v: 'fps' as View, ico: 'activity' }, { v: 'display' as View, ico: 'monitor' },
+  ] }] : []),
   { key: 'disk', ico: 'drive', items: [
     { v: 'overview', ico: 'overview' }, { v: 'explorer', ico: 'explorer' }, { v: 'files', ico: 'files' },
     { v: 'dupes', ico: 'copy' }, { v: 'history', ico: 'history' },
@@ -20,12 +24,19 @@ export const NAV_GROUPS: NavGroup[] = [
     { v: 'shortcuts', ico: 'unlink' }, { v: 'shredder', ico: 'shred' },
   ] },
   ...(IS_WINDOWS ? [{ key: 'optimize', ico: 'gauge', items: [
-    { v: 'optimizer' as View, ico: 'zap' }, { v: 'startup' as View, ico: 'rocket' },
-    { v: 'background' as View, ico: 'activity' }, { v: 'internet' as View, ico: 'globe' },
+    { v: 'optimizer' as View, ico: 'zap' }, { v: 'startup' as View, ico: 'power' },
+    { v: 'background' as View, ico: 'layers' }, { v: 'internet' as View, ico: 'globe' },
   ] }] : []),
+  { key: 'health', ico: 'heartPulse', items: [
+    { v: 'temps', ico: 'thermo' }, { v: 'health', ico: 'drive' }, { v: 'battery', ico: 'battery' },
+    ...(IS_WINDOWS ? [{ v: 'crashes' as View, ico: 'alert' }, { v: 'security' as View, ico: 'shield' }, { v: 'boot' as View, ico: 'clock' }] : []),
+  ] },
   { key: 'tools', ico: 'tools', items: [
-    ...(IS_WINDOWS ? [{ v: 'uninstaller' as View, ico: 'package' }, { v: 'updater' as View, ico: 'upgrade' }] : []),
-    { v: 'health', ico: 'thermo' },
+    ...(IS_WINDOWS ? [
+      { v: 'uninstaller' as View, ico: 'package' }, { v: 'updater' as View, ico: 'upgrade' },
+      { v: 'drivers' as View, ico: 'cpu' }, { v: 'winupdate' as View, ico: 'download' },
+    ] : []),
+    { v: 'report', ico: 'chart' },
   ] },
 ];
 

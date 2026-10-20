@@ -140,6 +140,25 @@ const updates = () => [
   { name: 'Python 3.14.5', id: 'Python.Python.3.14', version: '3.14.5', available: '3.14.7', source: 'winget' },
   { name: 'Telegram Desktop', id: 'Telegram.TelegramDesktop', version: '7.1.2', available: '7.3.1', source: 'winget' },
 ];
+const mockGames = [
+  { id: 'steam:730', name: 'Counter-Strike 2', launcher: 'steam', dir: 'C:\\Games\\Steam\\steamapps\\common\\Counter-Strike Global Offensive', size: 34 * GB, last_played: now - 3600, playtime: 41_200, cover: 'https://cdn.cloudflare.steamstatic.com/steam/apps/730/library_600x900.jpg', launch: 'steam://rungameid/730', shader_cache: ['C:\\Games\\Steam\\steamapps\\shadercache\\730', 1.4 * GB] },
+  { id: 'steam:1145350', name: 'Hades II', launcher: 'steam', dir: 'C:\\Games\\Steam\\steamapps\\common\\Hades II', size: 9 * GB, last_played: now - 86400 * 2, playtime: 2_300, cover: 'https://cdn.cloudflare.steamstatic.com/steam/apps/1145350/library_600x900.jpg', launch: 'steam://rungameid/1145350', shader_cache: null },
+  { id: 'steam:1091500', name: 'Cyberpunk 2077', launcher: 'steam', dir: 'C:\\Games\\Steam\\steamapps\\common\\Cyberpunk 2077', size: 71 * GB, last_played: now - 86400 * 140, playtime: 9_800, cover: 'https://cdn.cloudflare.steamstatic.com/steam/apps/1091500/library_600x900.jpg', launch: 'steam://rungameid/1091500', shader_cache: ['C:\\Games\\Steam\\steamapps\\shadercache\\1091500', 2.2 * GB] },
+  { id: 'epic:Fortnite', name: 'Fortnite', launcher: 'epic', dir: 'C:\\Games\\Epic Games\\Fortnite', size: 46 * GB, last_played: 0, playtime: 0, cover: null, launch: 'com.epicgames.launcher://apps/Fortnite?action=launch', shader_cache: null },
+  { id: 'riot:VALORANT', name: 'VALORANT', launcher: 'riot', dir: 'C:\\Riot Games\\VALORANT', size: 34 * GB, last_played: 0, playtime: 0, cover: null, launch: null, shader_cache: null },
+  { id: 'xbox:Forza Horizon 5', name: 'Forza Horizon 5', launcher: 'xbox', dir: 'C:\\XboxGames\\Forza Horizon 5', size: 128 * GB, last_played: 0, playtime: 0, cover: null, launch: null, shader_cache: null },
+];
+let gmCfg = {
+  enabled: true, default_boost: 'ask', switch_plan: true, apply_profile: false, close: ['onedrive', 'qbittorrent', 'ms-teams'], keep: ['discord', 'spotify'],
+  reopen: true, clear_standby: true, timer: true, unpark: false, record_fps: true, overlay: true, custom: [],
+  per_game: { 'steam:730': { boost: 'always', close: ['chrome'], keep: [] } } as Record<string, unknown>,
+};
+let pingSamples: (number | null)[] = Array.from({ length: 40 }, () => 14 + rnd() * 9);
+const snapshot = (i = 120) => ({
+  at: Date.now() - (120 - i) * 2000, cpu_load: 28 + Math.sin(i / 7) * 14 + rnd() * 8, cpu_mhz: 4620, cpu_base_mhz: 3600, cpu_limit: 100, cpu_temp: 61 + Math.sin(i / 9) * 6, cpu_temp_approx: true,
+  gpus: [{ name: 'NVIDIA GeForce RTX 4070', load: 72 + Math.sin(i / 5) * 18, temp: 66 + Math.sin(i / 8) * 4, mhz: 2610, max_mhz: 3105, mem_used: 7.1 * GB, mem_total: 12 * GB, power: 168, power_limit: 200, fan: 54, throttle: [] }],
+  ram_used: 18.2 * GB, ram_total: 32 * GB, ram_standby: 9.4 * GB, sensors: [['ACPI\\ThermalZone\\TZ00_0', 61]], fans: [],
+});
 let careCfg = {
   modules: ['junk', 'privacy', 'registry', 'shortcuts', 'startup', 'disk', 'updates'],
   privacy_kinds: ['cache', 'session', 'recent', 'run_history', 'typed_paths', 'search_history'],
@@ -286,8 +305,9 @@ export function installMock() {
       }
       case 'cancel_delete': return null;
       case 'hardlink_dupes': return { freed: 12 * GB, deleted: a.pairs.length, failed: [] };
-      case 'prefs_get': return { close_to_tray: true, tray_meter: true, tray_hint_shown: true };
-      case 'prefs_set': case 'tray_labels': return null;
+      case 'prefs_get': return { close_to_tray: true, tray_meter: true, tray_hint_shown: true, widget: false, widget_on_top: true, hotkeys_enabled: true, hotkeys: { fps: 'Ctrl+Shift+F', boost: 'Ctrl+Shift+B', care: 'Ctrl+Shift+C', widget: 'Ctrl+Shift+W' }, weekly: true };
+      case 'prefs_set': return [];
+      case 'tray_labels': return null;
       case 'launch_state': return { hidden: false };
       case 'junk_scan': return sysJunk();
       case 'junk_clean': return { freed: 3.4 * GB, cleaned: 812, locked: 14, failed: [] };
@@ -338,6 +358,64 @@ export function installMock() {
       case 'care_set_config': careCfg = { ...careCfg, ...a.config }; return null;
       case 'care_scan': await new Promise(r => setTimeout(r, 1800)); return careReport();
       case 'care_fix': return { freed: 4.1 * GB, fixed: 37, failed: [], running: [], restore_point: 'created', registry_backup: '1760000000.json' };
+      case 'games_list': return mockGames;
+      case 'game_launch': case 'game_set_exe': case 'gamemode_answer': case 'gamemode_boost_now': case 'overlay_set': case 'widget_set':
+      case 'display_set_refresh': case 'display_set_switch': case 'core_parking_set': case 'open_uri': case 'fps_start': case 'fps_delete':
+      case 'winupdate_reset': case 'settings_export': return null;
+      case 'game_exes': return [['C:\\Games\\Steam\\steamapps\\common\\Counter-Strike Global Offensive\\game\\bin\\win64\\cs2.exe', { priority: 'high', gpu_high: true, no_fso: false }]];
+      case 'game_leftovers': return [{ path: 'D:\\SteamLibrary\\steamapps\\common\\Old Racing Game', size: 14.2 * GB, launcher: 'steam' }];
+      case 'game_remove_paths': return { freed: 16 * GB, failed: [] };
+      case 'gamemode_config': return gmCfg;
+      case 'gamemode_set_config': gmCfg = a.config; return null;
+      case 'gamemode_status': return { game: mockGames[0], boosted: true, since: now - 47 * 60, closed: ['onedrive', 'qbittorrent'], pending: null };
+      case 'gamemode_sessions': return [
+        { game_id: 'steam:730', game: 'Counter-Strike 2', start: now - 86400 - 5400, end: now - 86400, boosted: true, closed: ['onedrive'], throttle: [], fps: { game: 'Counter-Strike 2', exe: 'cs2.exe', start: now - 86400 - 5400, seconds: 5400, frames: 1_500_000, avg: 278, low1: 164, low01: 121, timeline: [] } },
+        { game_id: 'epic:Fortnite', game: 'Fortnite', start: now - 3 * 86400 - 7200, end: now - 3 * 86400, boosted: true, closed: [], throttle: [{ start: 0, end: 60000, kind: 'gpu_thermal', worst: 87 }], fps: { game: 'Fortnite', exe: 'FortniteClient-Win64-Shipping.exe', start: 0, seconds: 7200, frames: 1_000_000, avg: 141, low1: 92, low01: 70, timeline: [] } },
+      ];
+      case 'running_apps': return [
+        { id: 'chrome', name: 'chrome', memory: 3.1 * GB }, { id: 'discord', name: 'Discord', memory: 0.6 * GB }, { id: 'onedrive', name: 'OneDrive', memory: 0.2 * GB },
+        { id: 'spotify', name: 'Spotify', memory: 0.3 * GB }, { id: 'ms-teams', name: 'ms-teams', memory: 0.9 * GB }, { id: 'steamwebhelper', name: 'steamwebhelper', memory: 0.4 * GB },
+      ];
+      case 'fps_status': return { tool_ready: true, recording: null, elevated: true, overlay: false };
+      case 'fps_stop': return null;
+      case 'fps_sessions': return [
+        { game: 'Counter-Strike 2', exe: 'cs2.exe', start: now - 86400, seconds: 5400, frames: 1_500_000, avg: 278, low1: 164, low01: 121, timeline: Array.from({ length: 90 }, (_, i) => 260 + Math.sin(i / 5) * 25 + rnd() * 20) },
+        { game: 'Counter-Strike 2', exe: 'cs2.exe', start: now - 6 * 86400, seconds: 3600, frames: 900_000, avg: 241, low1: 131, low01: 98, timeline: Array.from({ length: 60 }, (_, i) => 230 + Math.cos(i / 6) * 30 + rnd() * 20) },
+        { game: 'Fortnite', exe: 'FortniteClient-Win64-Shipping.exe', start: now - 3 * 86400, seconds: 7200, frames: 1_000_000, avg: 141, low1: 92, low01: 70, timeline: Array.from({ length: 120 }, (_, i) => 140 + Math.sin(i / 8) * 18 + rnd() * 12) },
+      ];
+      case 'sensors_now': return snapshot();
+      case 'sensors_history': return { history: Array.from({ length: 120 }, (_, i) => snapshot(i)), throttle: [{ start: Date.now() - 3 * 3600_000, end: Date.now() - 3 * 3600_000 + 95_000, kind: 'gpu_thermal', worst: 86 }], trend: { days: Array.from({ length: 40 }, (_, i) => [`2026-09-${String((i % 30) + 1).padStart(2, '0')}`, 38 + i * 0.25 + rnd() * 2, 34 + i * 0.2]), cpu_rise: 9.5, gpu_rise: 7 } };
+      case 'ping_get': pingSamples = [...pingSamples, rnd() > 0.97 ? null : 14 + rnd() * 9].slice(-120); return { host: a.host ?? '1.1.1.1', running: true, samples: pingSamples, avg: 17.8, jitter: 2.4, loss: 1 };
+      case 'ping_gateway': return '192.168.0.1';
+      case 'display_info': return {
+        monitors: [
+          { device: '\\\\.\\DISPLAY1', name: 'ASUS VG27AQ', adapter: 'NVIDIA GeForce RTX 4070', width: 2560, height: 1440, hz: 60, max_hz: 165, primary: true },
+          { device: '\\\\.\\DISPLAY2', name: 'Dell P2419H', adapter: 'NVIDIA GeForce RTX 4070', width: 1920, height: 1080, hz: 60, max_hz: 60, primary: false },
+        ], windowed_opt: true, vrr: false, timer: [15.6, 0.5], core_parking: 10,
+      };
+      case 'ram_purge': return 6.2 * GB;
+      case 'battery_info': return { battery: { present: true, name: 'SMP 5B10W51867', design: 57000, full: 46800, cycles: 312, wear: 17.9, charge: 84, charging: true }, history: Array.from({ length: 30 }, (_, i) => [now - (30 - i) * 7 * 86400, 51000 - i * 140, 57000]) };
+      case 'crashes_list': return [
+        { at: now - 3600 * 5, kind: 'app_crash', app: 'FortniteClient-Win64-Shipping.exe', module: 'nvwgf2umx.dll', culprit: 'NVIDIA graphics driver', code: 'c0000005' },
+        { at: now - 86400 * 2, kind: 'bsod', app: '', module: '', culprit: 'VIDEO_TDR_FAILURE (graphics driver stopped responding)', code: '0x116' },
+        { at: now - 86400 * 2 - 30, kind: 'power_loss', app: '', module: '', culprit: null, code: '' },
+        { at: now - 86400 * 4, kind: 'app_hang', app: 'explorer.exe', module: '', culprit: null, code: '' },
+        { at: now - 86400 * 9, kind: 'app_crash', app: 'obs64.exe', module: 'KERNELBASE.dll', culprit: 'Windows core library (usually the app itself)', code: 'e0434352' },
+      ];
+      case 'security_status': return { defender: true, realtime: true, signature_age: 0, firewall: false, bitlocker: null, secure_boot: true, uac: true };
+      case 'winupdate_status': return { last_install: now - 18 * 86400, last_title: 'KB5129195 Security Update', reboot_pending: true, service_running: false };
+      case 'winupdate_pending': await new Promise(r => setTimeout(r, 1200)); return ['2026-10 Cumulative Update for Windows 11 (KB5131234)', 'Microsoft Defender Antivirus definition update'];
+      case 'boot_info': return { last_boot: now - 9 * 3600, history: Array.from({ length: 14 }, (_, i) => [now - i * 86400, 38000 - i * 400 + rnd() * 6000, 19000 + rnd() * 3000, 15000]), slow: [['Docker Desktop', 8400], ['Steam Client', 5100], ['OneDrive', 2200]], needs_admin: false };
+      case 'drivers_list': return [{ name: 'NVIDIA GeForce RTX 4070', vendor: 'nvidia', version: '32.0.15.6094', date: now - 160 * 86400, display_version: '560.94', download: 'https://www.nvidia.com/en-us/drivers/' }];
+      case 'component_cleanup': await new Promise(r => setTimeout(r, 1500)); return 2.7 * GB;
+      case 'stats_report': return {
+        from: now - a.days * 86400, to: now, freed: 23.4 * GB,
+        freed_by: [['junk', 9.1 * GB], ['care', 6.2 * GB], ['games', 5.8 * GB], ['privacy', 1.4 * GB], ['uninstaller', 0.9 * GB]],
+        games: [['Counter-Strike 2', 410, 271], ['Fortnite', 220, 139], ['Hades II', 95, null]],
+        care: Array.from({ length: 12 }, (_, i) => [now - (12 - i) * 86400 * 3, 58 + i * 2.6 + rnd() * 4]),
+        daily_freed: Array.from({ length: a.days }, () => (rnd() > 0.4 ? rnd() * 5 * GB : 0)),
+      };
+      case 'settings_import': return {};
       case 'plugin:updater|check': return null;
       case 'plugin:dialog|open': return null;
       default:

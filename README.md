@@ -27,6 +27,11 @@ booster, drive health and a Windows optimizer with gaming, work and battery prof
 
 |   |   |
 |---|---|
+| 🎮 **Automatic game mode** | Notices when a game starts and asks (or just does it, per game): high-performance power plan, close the apps on *your* list (never the ones you keep), clear standby RAM, fine timer resolution, unparked cores, then everything back when you quit. Per-game CPU priority, GPU preference and fullscreen-optimization switches. |
+| 📚 **Game library** | Steam, Epic, GOG, Ubisoft, Xbox, EA, Battle.net, Riot and Rockstar games in one grid with covers, size, last played and playtime; clean leftovers of uninstalled games and old shader caches. |
+| 📈 **FPS & ping** | Frame rate, 1% / 0.1% lows and frame times through PresentMon (nothing injected into games) in a small always-on-top window, saved per session for before/after comparisons; live ping, jitter and packet loss. |
+| 🌡️ **Temperatures & throttling** | CPU / GPU temperature, clocks, power and fan without extra drivers, a throttling log, and an idle-temperature trend that tells you when the fans need cleaning. |
+| 🩹 **PC health** | Battery wear, crashes and blue screens in plain words, security checkup, boot time, GPU driver age, Windows Update helper, refresh-rate check, weekly report, desktop widget, global hotkeys and settings export. |
 | ❤️ **One-click Care** | One scan checks junk files, privacy traces, the registry, broken shortcuts, startup apps, drive health and software updates, gives a health score and fixes the safe part with one click — after showing you exactly what changes. Can run on a schedule (Windows Task Scheduler) and notify you from the tray. |
 | 🕵️ **Privacy sweep** | Browser caches, cookies, history and sessions (Chrome, Edge, Brave, Vivaldi, Opera, Firefox — Firefox bookmarks are kept), recent files, Run/Explorer history and the clipboard. Cookies and history are never picked by default. |
 | 🧾 **Careful registry cleaner** | Only entries that point to files that no longer exist (uninstall entries, app paths, startup commands, shared DLLs…). A Windows restore point plus Tessera's own backup before every fix, with one-click undo. |
@@ -53,6 +58,79 @@ booster, drive health and a Windows optimizer with gaming, work and battery prof
 | 🪶 **Tiny** | ~5 MB app thanks to Tauri — uses the OS webview instead of bundling Chromium. |
 
 ## 📸 Screenshots
+
+### Care & gaming
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/care.png" alt="One-click Care" /></td>
+    <td><img src="docs/screenshots/gamemode.png" alt="Game mode" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Care</b> — one scan, one click, health score</td>
+    <td align="center"><b>Game mode</b> — your boost, your app lists</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/library.png" alt="Game library" /></td>
+    <td><img src="docs/screenshots/fps.png" alt="FPS and ping" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Game library</b> — every launcher in one grid</td>
+    <td align="center"><b>FPS & ping</b> — sessions to compare, live ping</td>
+  </tr>
+</table>
+
+### PC health
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/temps.png" alt="Temperatures" /></td>
+    <td><img src="docs/screenshots/crashes.png" alt="Crashes and blue screens" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Temperatures</b> — throttling and fan-dust trend</td>
+    <td align="center"><b>Crashes</b> — blue screens in plain words</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/security.png" alt="Security checkup" /></td>
+    <td><img src="docs/screenshots/disk-health.png" alt="Disk health" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Security checkup</b> — what's on, what isn't</td>
+    <td align="center"><b>Disk health</b> — SMART, wear, TRIM</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/battery.png" alt="Battery health" /></td>
+    <td><img src="docs/screenshots/report.png" alt="Weekly report" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Battery</b> — capacity left and over time</td>
+    <td align="center"><b>Weekly report</b> — space freed, games, score</td>
+  </tr>
+</table>
+
+### Cleaning & tools
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/privacy.png" alt="Privacy sweep" /></td>
+    <td><img src="docs/screenshots/registry.png" alt="Registry cleaner" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Privacy sweep</b> — browsers and Windows traces</td>
+    <td align="center"><b>Registry cleaner</b> — backed up, one-click undo</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/uninstaller.png" alt="Uninstaller" /></td>
+    <td><img src="docs/screenshots/internet.png" alt="Internet booster" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Uninstaller</b> — plus the leftovers</td>
+    <td align="center"><b>Internet booster</b> — fastest DNS, reversible</td>
+  </tr>
+</table>
+
+### Disk analyzer
 
 <table>
   <tr>
@@ -181,7 +259,8 @@ for CI. Contributors without the key still get a working build — just without 
 - [x] Saved scans that open instantly and catch up via the NTFS USN journal
 - [x] Windows optimizer with switchable profiles
 - [x] One-click Care: privacy sweep, registry cleaner, uninstaller, updater, internet booster, drive health, shredder, tray
-- [ ] Per-game profiles that switch automatically when a game starts
+- [x] Automatic game mode with per-game settings, game library, FPS & ping, temperatures, PC health tools
+- [ ] Ideas for 0.4 live in the [issues](../../issues?q=label%3A%22planned%3A+0.4%22)
 - [ ] Even more languages — [help translate!](CONTRIBUTING.md#translations)
 
 ## 🤝 Contributing

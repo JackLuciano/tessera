@@ -6,11 +6,12 @@
   import { t } from '../i18n.svelte';
   import { confirmDelete } from '../confirm.svelte';
   import { ask } from '../ask.svelte';
-  import { failures } from '../sys';
+  import { failures, rpNote } from '../sys';
+  import { IS_WINDOWS } from '../nav';
   import Icon from '../Icon.svelte';
 
   // ---- system junk: known places, no drive scan needed ----
-  const SYS_ICO: Record<string, string> = { user_temp: 'cache', win_temp: 'cache', thumbs: 'image', crash: 'alert', shaders: 'game', wu_cache: 'download', recycle: 'trash', logs: 'doc', app_cache: 'cache' };
+  const SYS_ICO: Record<string, string> = { user_temp: 'cache', win_temp: 'cache', thumbs: 'image', crash: 'alert', shaders: 'game', wu_cache: 'download', recycle: 'trash', logs: 'doc', app_cache: 'cache', old_downloads: 'download' };
   let sys = $state<SysJunk[] | null>(null);
   let sysOn = $state(new Set<string>());
   let sysOpen = $state<string | null>(null);
@@ -43,6 +44,17 @@
       await app.refreshDrives();
       await loadSys();
     } finally { sysBusy = false; }
+  }
+
+  // ---- Windows component store (DISM), long-running ----
+  let dismBusy = $state(false);
+  async function dism() {
+    const ok = await ask({ title: t('dism.confirm'), text: t('dism.confirmText'), ico: 'layers', confirm: t('dism.run'), note: rpNote() });
+    if (!ok) return;
+    dismBusy = true;
+    try { const freed = await api.componentCleanup(); app.toast(t('dism.done', { size: fmt(freed) }), 'success'); await app.refreshDrives(); }
+    catch (e) { app.toast(String(e), 'error'); }
+    finally { dismBusy = false; }
   }
 
   // ---- regenerable folders found in the scanned tree ----
@@ -130,6 +142,17 @@
     </div>
   {/if}
 </section>
+
+{#if IS_WINDOWS}
+  <section class="glass p-4 reveal flex items-center gap-4 flex-wrap" style="--i:1">
+    <span class="w-10 h-10 rounded-xl grid place-items-center soft shrink-0" style="color:var(--color-primary)"><Icon name="layers" /></span>
+    <div class="flex-1 min-w-56">
+      <div class="font-semibold text-sm flex items-center gap-1.5">{t('dism.title')}<span class="tag tag-warn"><Icon name="shield" size=".6rem" />{t('opt.admin')}</span></div>
+      <div class="text-xs muted">{t('dism.sub')}</div>
+    </div>
+    <button class="btn btn-sm gap-1.5" disabled={dismBusy || !app.elevated} onclick={dism}>{#if dismBusy}<span class="loading loading-spinner loading-xs"></span>{t('dism.running')}{:else}<Icon name="sparkles" size=".9rem" />{t('dism.run')}{/if}</button>
+  </section>
+{/if}
 
 {#if !app.summary}
   <div class="glass p-6 text-center muted text-sm reveal" style="--i:2">{t('cleanup.scanForMore')}</div>

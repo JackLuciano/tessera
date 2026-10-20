@@ -82,13 +82,25 @@ Invoke-Checked { git tag -a $tag -m "Tessera $tag" } 'git tag'
 Invoke-Checked { git push origin $tag } 'git push tag'
 $assets = @($setup.FullName, "$($setup.FullName).sig", $msi.FullName, "$($msi.FullName).sig", $latestPath)
 $noteArgs = if ($NotesFile) { @('--notes-file', $NotesFile) } else { @('--generate-notes') }
-# GitHub can take a few seconds to see a freshly pushed tag, and --verify-tag fails until it does
-for ($try = 1; ; $try++) {
-  gh release create $tag @assets --repo $repo --title "Tessera $tag" --verify-tag @noteArgs
+# GitHub can take a while to see a freshly pushed tag, and --verify-tag fails until it does: wait for
+# the API to know the tag (up to 3 minutes) before creating the release
+Write-Host "Waiting for GitHub to see $tag..."
+for ($i = 0; $i -lt 36; $i++) {
+  gh api "repos/$repo/git/ref/tags/$tag" --silent 2>$null
   if (-not $LASTEXITCODE) { break }
-  if ($try -ge 5) { throw "gh release create failed (exit $LASTEXITCODE). The tag $tag is already pushed; rerun the gh command by hand." }
+  Start-Sleep -Seconds 5
+}
+for ($try = 1; ; $try++) {
+  # Capture the output so a failure shows gh's own message instead of just an exit code
+  $out = gh release create $tag @assets --repo $repo --title "Tessera $tag" --verify-tag @noteArgs 2>&1
+  if (-not $LASTEXITCODE) { $out | Write-Host; break }
+  Write-Host ($out | Out-String) -ForegroundColor Red
+  # A half-created release (e.g. an upload that broke off) would block every retry: remove it
+  gh release view $tag --repo $repo *> $null
+  if (-not $LASTEXITCODE) { gh release delete $tag --repo $repo --yes *> $null }
+  if ($try -ge 5) { throw "gh release create failed (see above). The tag $tag is already pushed; rerun the gh command by hand." }
   Write-Host "Release not created yet (attempt $try), retrying..." -ForegroundColor Yellow
-  Start-Sleep -Seconds (3 * $try)
+  Start-Sleep -Seconds (10 * $try)
 }
 Write-Host "Published https://github.com/$repo/releases/tag/$tag" -ForegroundColor Green
 
