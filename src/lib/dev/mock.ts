@@ -490,6 +490,8 @@ export function installMock() {
           stutters: [{ sec: 2410, ms: 188, cause: 'thermal', detail: 'GPU' }, { sec: 2470, ms: 120, cause: 'thermal', detail: 'GPU' }, { sec: 5120, ms: 77, cause: 'gpu', detail: '' }] },
       ];
       case 'sensors_now': return snapshot();
+      case 'cpu_driver': return { supported: true, installed: null };
+      case 'cpu_driver_install': return false;
       case 'sensors_history': return { history: Array.from({ length: 120 }, (_, i) => snapshot(i)), throttle: [{ start: Date.now() - 3 * 3600_000, end: Date.now() - 3 * 3600_000 + 95_000, kind: 'gpu_thermal', worst: 86 }], trend: { days: Array.from({ length: 40 }, (_, i) => [`2026-09-${String((i % 30) + 1).padStart(2, '0')}`, 38 + i * 0.25 + rnd() * 2, 34 + i * 0.2]), cpu_rise: 9.5, gpu_rise: 7 } };
       case 'ping_get': pingSamples = [...pingSamples, rnd() > 0.97 ? null : 14 + rnd() * 9].slice(-120); return { host: a.host ?? '1.1.1.1', running: true, samples: pingSamples, avg: 17.8, jitter: 2.4, loss: 1 };
       case 'ping_gateway': return '192.168.0.1';

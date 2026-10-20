@@ -7,7 +7,7 @@
 //! so a parent always precedes its children. Folder totals are not stored; they are rolled up from
 //! the leaves on load.
 
-use crate::scanner::{Kind, Node, Tree, CAT_COUNT, NO_PARENT};
+use crate::scanner::{roll_up, sort_children, Cat, CatStore, Kind, Node, Tree, CAT_COUNT, NO_PARENT};
 use rayon::prelude::*;
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -88,10 +88,10 @@ pub fn encode(t: &Tree, meta: &Meta) -> Vec<u8> {
             continue;
         }
         out.extend_from_slice(&n.size.to_le_bytes());
-        out.extend_from_slice(&n.modified.to_le_bytes());
-        out.extend_from_slice(&n.files.to_le_bytes());
+        out.extend_from_slice(&u64::from(n.modified).to_le_bytes());
+        out.extend_from_slice(&u64::from(n.files).to_le_bytes());
         // Leaves usually have one or two categories: store only the non-zero ones
-        let cats: Vec<(usize, u64)> = n.cats.iter().copied().enumerate().filter(|(_, v)| *v > 0).collect();
+        let cats: Vec<(usize, u64)> = t.cats_of(id).into_iter().enumerate().filter(|(_, v)| *v > 0).collect();
         out.push(cats.len() as u8);
         for (c, v) in cats {
             out.push(c as u8);
@@ -176,6 +176,7 @@ fn decode(raw: &[u8]) -> io::Result<(Tree, Meta)> {
     let journal = if c.u8()? == 1 { Some((c.u64()?, c.u64()? as i64)) } else { None };
     let count = c.u32()? as usize;
     let mut nodes: Vec<Node> = Vec::with_capacity(count);
+    let mut cats = CatStore::default();
     for i in 0..count {
         let parent = c.u32()?;
         if i > 0 && parent as usize >= i {
@@ -186,43 +187,54 @@ fn decode(raw: &[u8]) -> io::Result<(Tree, Meta)> {
             1 => Kind::File,
             _ => Kind::Bucket,
         };
-        let name = c.str()?;
-        let mut n = Node { name, parent, size: 0, files: 0, dirs: 0, kind, children: Vec::new(), cats: [0; CAT_COUNT], modified: 0 };
-        if kind != Kind::Dir {
-            n.size = c.u64()?;
-            n.modified = c.u64()?;
-            n.files = c.u64()?;
-            for _ in 0..c.u8()? {
-                let idx = c.u8()? as usize;
-                let v = c.u64()?;
-                if idx < CAT_COUNT {
-                    n.cats[idx] = v;
-                }
+        let name = c.str()?.into_boxed_str();
+        // Only folders have children, and the root is a folder
+        if if i == 0 { kind != Kind::Dir } else { nodes[parent as usize].kind != Kind::Dir } {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "scan cache has a child outside a folder"));
+        }
+        if kind == Kind::Dir {
+            nodes.push(Node::dir(name, parent));
+            continue;
+        }
+        let size = c.u64()?;
+        let modified = c.u64()?.min(u32::MAX as u64) as u32;
+        let files = c.u64()?.min(u32::MAX as u64) as u32;
+        let mut row = [0u64; CAT_COUNT];
+        for _ in 0..c.u8()? {
+            let idx = c.u8()? as usize;
+            let v = c.u64()?;
+            if idx < CAT_COUNT {
+                row[idx] = v;
             }
         }
-        nodes.push(n);
-    }
-    // Children lists and folder totals: every node comes after its parent, so one reverse pass rolls up
-    for i in (1..nodes.len()).rev() {
-        let (size, files, dirs, cats, modified, is_dir, parent) = {
-            let n = &nodes[i];
-            (n.size, n.files, n.dirs, n.cats, n.modified, n.kind == Kind::Dir, n.parent as usize)
-        };
-        let p = &mut nodes[parent];
-        p.children.push(i as u32);
-        p.size += size;
-        p.files += files;
-        p.dirs += dirs + u64::from(is_dir);
-        p.modified = p.modified.max(modified);
-        for (t, v) in p.cats.iter_mut().zip(cats) {
-            *t += v;
+        if kind == Kind::File {
+            // A file's bytes are all in one category; a zero-size file has none stored
+            let cat = row.iter().position(|v| *v > 0).map_or(Cat::Docs, Cat::from_idx);
+            nodes.push(Node::file(name, parent, size, cat, modified));
+        } else {
+            nodes.push(Node::bucket(name, parent, size, files, modified, &row, &mut cats));
         }
     }
-    let sizes: Vec<u64> = nodes.iter().map(|n| n.size).collect();
-    for n in nodes.iter_mut() {
-        n.children.sort_by_key(|c| std::cmp::Reverse(sizes[*c as usize]));
+    // Children lists, each allocated at its exact size: every node comes after its parent
+    let mut fill = vec![0u32; nodes.len()];
+    for n in nodes.iter().skip(1) {
+        fill[n.parent as usize] += 1;
     }
-    Ok((Tree { nodes, root_path: PathBuf::from(root), elapsed_ms, errors }, Meta { saved_at, journal }))
+    for (n, k) in nodes.iter_mut().zip(fill.iter_mut()) {
+        n.children = vec![0; *k as usize].into_boxed_slice();
+        *k = 0;
+    }
+    for i in 1..nodes.len() {
+        let p = nodes[i].parent as usize;
+        nodes[p].children[fill[p] as usize] = i as u32;
+        fill[p] += 1;
+    }
+    drop(fill);
+    // Folder totals are rolled up from the leaves
+    roll_up(&mut nodes, &mut cats);
+    sort_children(&mut nodes);
+    cats.shrink_to_fit();
+    Ok((Tree { nodes, cats, root_path: PathBuf::from(root), elapsed_ms, errors }, Meta { saved_at, journal }))
 }
 
 // ---------- catch-up ----------
@@ -368,6 +380,35 @@ mod tests {
     use super::*;
     use crate::scanner::{scan, Progress};
 
+    /// Memory a saved scan takes once loaded, and what is left after dropping it.
+    /// `cargo test --release memory_of_saved_scans -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn memory_of_saved_scans() {
+        let mem = || {
+            let pid = sysinfo::get_current_pid().unwrap();
+            let mut sys = sysinfo::System::new();
+            sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
+            let p = sys.process(pid).unwrap();
+            format!("working set {} MB, private {} MB", p.memory() >> 20, p.virtual_memory() >> 20)
+        };
+        let dir = PathBuf::from(std::env::var("APPDATA").unwrap()).join("com.tessera.app").join("scans");
+        println!("start: {}", mem());
+        for f in std::fs::read_dir(dir).unwrap().flatten() {
+            let mut raw = Vec::new();
+            lz4_flex::frame::FrameDecoder::new(BufReader::new(std::fs::File::open(f.path()).unwrap())).read_to_end(&mut raw).unwrap();
+            let (tree, _) = decode(&raw).unwrap();
+            drop(raw);
+            let files = tree.nodes.iter().filter(|n| n.kind == Kind::File).count();
+            assert_eq!(tree.cats_of(0).iter().sum::<u64>(), tree.nodes[0].size, "category bytes add up to the total");
+            let (rows, packed) = tree.cats.counts();
+            println!("{}: {} nodes ({files} files, {rows} category rows, {packed} packed), {}", tree.root_path.display(), tree.nodes.len(), mem());
+            drop(tree);
+            crate::return_memory();
+            println!("  dropped: {}", mem());
+        }
+    }
+
     #[test]
     fn round_trips_a_scan() {
         let d = std::env::temp_dir().join(format!("tessera-cache-{}", std::process::id()));
@@ -377,13 +418,16 @@ mod tests {
         std::fs::write(d.join("data/a.txt"), b"hello").unwrap();
         let mut t = scan(&d.join("data"), &Progress::new());
         // A removed node must not end up in the file
-        let sub = t.nodes[0].children.iter().copied().find(|c| t.nodes[*c as usize].name == "sub").unwrap();
+        let sub = t.nodes[0].children.iter().copied().find(|c| &*t.nodes[*c as usize].name == "sub").unwrap();
         let before = (t.nodes[0].size, t.nodes[0].files);
         let base = d.join("app");
         let raw = encode(&t, &Meta { saved_at: 42, journal: Some((7, 99)) });
         write(&base, &t.root_path.to_string_lossy(), &raw).unwrap();
         let (back, meta) = load(&base, &t.root_path.to_string_lossy()).unwrap();
         assert_eq!((back.nodes[0].size, back.nodes[0].files), before);
+        assert_eq!(back.cats_of(0), t.cats_of(0));
+        let sub_path = d.join("data").join("sub");
+        assert_eq!(back.dominant_cat(back.find_dir(&sub_path)), t.dominant_cat(t.find_dir(&sub_path)));
         assert_eq!(meta.saved_at, 42);
         assert_eq!(meta.journal, Some((7, 99)));
         assert_eq!(back.nodes.len(), t.nodes.len());

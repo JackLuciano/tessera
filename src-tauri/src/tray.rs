@@ -148,7 +148,10 @@ pub fn save_prefs(app: &AppHandle, p: &Prefs) {
 
 /// Bring the main window back from the tray (or from being minimized).
 pub fn show_main(app: &AppHandle) {
+    // Cancels a pending tree release
+    app.state::<crate::AppState>().hide_epoch.fetch_add(1, Ordering::Relaxed);
     if let Some(w) = app.get_webview_window("main") {
+        low_memory(&w, false);
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
@@ -277,6 +280,32 @@ pub fn notify(app: &AppHandle, title: &str, body: &str) {
     }
 }
 
+/// While hidden, ask WebView2 to keep its memory low: it drops caches and lets Windows page out
+/// the renderer. Back to normal when the window is shown again.
+fn low_memory(w: &tauri::WebviewWindow, low: bool) {
+    #[cfg(windows)]
+    {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+        };
+        use windows_core::Interface;
+        let level = if low { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW } else { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL };
+        let _ = w.with_webview(move |wv| {
+            // SAFETY: plain COM calls on the window's own controller, on the thread that owns it.
+            // Older WebView2 runtimes don't have ICoreWebView2_19; then the cast fails and nothing happens.
+            unsafe {
+                if let Ok(core) = wv.controller().CoreWebView2()
+                    && let Ok(core) = core.cast::<ICoreWebView2_19>()
+                {
+                    let _ = core.SetMemoryUsageTargetLevel(level);
+                }
+            }
+        });
+    }
+    #[cfg(not(windows))]
+    let _ = (w, low);
+}
+
 /// Window close: hide to the tray when that's the setting; tell the user the first time.
 pub fn on_close(app: &AppHandle) -> bool {
     let st = app.state::<crate::AppState>();
@@ -286,7 +315,9 @@ pub fn on_close(app: &AppHandle) -> bool {
     }
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.hide();
+        low_memory(&w, true);
     }
+    crate::release_when_hidden(app);
     if !prefs.tray_hint_shown {
         prefs.tray_hint_shown = true;
         *st.prefs.lock() = prefs.clone();

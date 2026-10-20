@@ -315,7 +315,7 @@ pub fn empty_folders(t: &Tree, limit: usize) -> Vec<EmptyFolder> {
         if id != 0 && n.files == 0 && n.parent != NO_PARENT && !KEEP_NAMES.contains(&name.as_str()) {
             let path = t.path_of(id);
             if !crate::is_protected(&path) {
-                out.push(EmptyFolder { id, path: path.to_string_lossy().into_owned(), nested: n.dirs });
+                out.push(EmptyFolder { id, path: path.to_string_lossy().into_owned(), nested: n.dirs.into() });
                 if out.len() >= limit {
                     break;
                 }

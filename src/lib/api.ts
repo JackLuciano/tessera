@@ -269,6 +269,9 @@ export const api = {
   },
   sensors: () => invoke<Snapshot | null>('sensors_now'),
   sensorHistory: () => invoke<SensorHistory>('sensors_history'),
+  cpuDriver: () => invoke<{ supported: boolean; installed: string | null }>('cpu_driver'),
+  /** Resolves true when Windows needs a restart before the driver works. */
+  cpuDriverInstall: () => invoke<boolean>('cpu_driver_install'),
   ping: (host?: string) => invoke<PingState>('ping_get', { host }),
   gateway: () => invoke<string | null>('ping_gateway'),
   display: {

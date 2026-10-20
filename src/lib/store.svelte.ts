@@ -50,6 +50,8 @@ class AppStore {
   /** Latest totals from live events, applied to `summary` together with the next view refresh. */
   #liveTotals: { size: number; files: number } | null = null;
   #liveFoldersPending = 0;
+  /** Root whose scan tree the backend dropped while the window was in the tray; reloaded on show. */
+  #released: string | null = null;
   /** Open the last saved scan on start instead of an empty screen. */
   reopen = $state<boolean>(load('tessera-reopen', true));
   /** When the shown results come from a saved scan: its time (unix seconds); null after a fresh scan. */
@@ -97,6 +99,14 @@ class AppStore {
       this.catchingUp = false;
       this.liveVersion++;
       if (e.payload.folders) this.toast(t('cache.caughtUp', { n: e.payload.folders.toLocaleString() }), 'info');
+    });
+    // The backend let go of the scan tree to save memory while the window sat in the tray
+    await listen<string>('tree-released', e => { this.#released = e.payload; });
+    await listen('window-shown', async () => {
+      const root = this.#released;
+      if (!root || this.scanning) return;
+      this.#released = null;
+      if (!(await this.openSaved(root))) { this.summary = null; this.cachedAt = null; this.version++; }
     });
     api.setLiveWatch(this.live).catch(() => {});
     await this.refreshDrives();

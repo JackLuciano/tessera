@@ -6,10 +6,29 @@
   import PageHead from '../PageHead.svelte';
   import Ring from '../Ring.svelte';
   import Spark from '../Spark.svelte';
+  import { app } from '../store.svelte';
 
   let h = $state<SensorHistory | null>(null);
+  /** The optional PawnIO driver for the real CPU temperature. */
+  let drv = $state<{ supported: boolean; installed: string | null } | null>(null);
+  let installing = $state(false);
+  let reboot = $state(false);
+
+  async function installDriver() {
+    installing = true;
+    try {
+      reboot = await api.cpuDriverInstall();
+      drv = await api.cpuDriver();
+      app.toast(t(reboot ? 'temps.drvReboot' : 'temps.drvDone'), reboot ? 'info' : 'success');
+    } catch (e) {
+      if (String(e) !== 'cancelled') app.toast(String(e), 'error');
+    } finally {
+      installing = false;
+    }
+  }
 
   onMount(() => {
+    api.cpuDriver().then(v => (drv = v)).catch(() => {});
     const tick = () => api.sensorHistory().then(v => (h = v)).catch(() => {});
     tick();
     const timer = setInterval(tick, 2000);
@@ -31,7 +50,24 @@
     <Ring value={now?.cpu_load ?? null} label={t('temps.cpuLoad')} unit="%" warn={85} bad={97} />
     <Ring value={gpu?.load ?? null} label={t('temps.gpuLoad')} unit="%" warn={90} bad={99} />
   </div>
-  {#if now && now.cpu_temp === null}<div class="text-[11px] muted text-center mt-3">{t('temps.noCpuTemp')}</div>{/if}
+  {#if now && (now.cpu_temp === null || now.cpu_temp_approx)}
+    <div class="flex flex-col items-center gap-2 mt-3 text-center">
+      {#if now.cpu_temp === null}<div class="text-[11px] muted">{t('temps.noCpuTemp')}</div>{/if}
+      {#if drv?.supported && !drv.installed && !reboot}
+        <button class="btn btn-sm btn-primary gap-1.5" disabled={installing} onclick={installDriver}>
+          {#if installing}<span class="loading loading-spinner loading-xs"></span>{:else}<Icon name="thermo" size=".9rem" />{/if}{t('temps.drvInstall')}
+        </button>
+        <div class="text-[11px] muted max-w-md">{t('temps.drvNote')}</div>
+      {:else if reboot}
+        <div class="text-[11px]" style="color:var(--color-info)">{t('temps.drvReboot')}</div>
+      {:else if drv?.installed && !app.elevated}
+        <div class="text-[11px] muted">{t('temps.drvAdmin')}</div>
+        <button class="btn btn-xs btn-ghost gap-1" onclick={() => api.relaunchAsAdmin().catch(e => app.toast(String(e), 'error'))}><Icon name="shield" size=".8rem" />{t('temps.drvRelaunch')}</button>
+      {:else if drv?.installed}
+        <div class="text-[11px] muted">{t('temps.drvWaiting')}</div>
+      {/if}
+    </div>
+  {/if}
 </section>
 
 <section class="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">

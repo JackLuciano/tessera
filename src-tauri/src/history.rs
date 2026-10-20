@@ -56,7 +56,7 @@ pub fn folder_map(t: &Tree) -> HashMap<String, u64> {
         for c in &n.children {
             let cn = &t.nodes[*c as usize];
             if cn.kind == Kind::Dir && cn.size >= MIN_FOLDER && cn.parent != NO_PARENT {
-                let r = if rel.is_empty() { cn.name.clone() } else { format!("{rel}/{}", cn.name) };
+                let r = if rel.is_empty() { cn.name.to_string() } else { format!("{rel}/{}", cn.name) };
                 stack.push((*c, depth + 1, r));
             }
         }
@@ -79,7 +79,7 @@ pub fn save(base: &Path, t: &Tree) -> std::io::Result<()> {
     let d = dir(base, &root);
     fs::create_dir_all(&d)?;
     let r = &t.nodes[0];
-    let snap = Snapshot { ts: now(), root, size: r.size, files: r.files, folders: folder_map(t) };
+    let snap = Snapshot { ts: now(), root, size: r.size, files: r.files.into(), folders: folder_map(t) };
     fs::write(d.join(format!("{}.json", snap.ts)), serde_json::to_vec(&snap)?)?;
     // Keep the newest KEEP snapshots
     let mut files: Vec<_> = fs::read_dir(&d)?.flatten().map(|e| e.path()).collect();

@@ -38,6 +38,11 @@ impl Cat {
         self as usize
     }
 
+    /// Unknown indices (a newer cache file) fall back to Docs, the classifier's own default.
+    pub fn from_idx(i: usize) -> Cat {
+        Cat::ALL.get(i).copied().unwrap_or(Cat::Docs)
+    }
+
     /// Classify by extension first, then by well-known folder names in the path.
     pub fn classify(name: &str, path_lower: &str) -> Cat {
         if path_lower.contains("\\cache") || path_lower.contains("/cache") || path_lower.contains("\\temp\\")
@@ -76,17 +81,169 @@ impl Cat {
     }
 }
 
+/// Bytes per category for one folder or small-files bucket.
+pub type Cats = [u64; CAT_COUNT];
+
+/// Folders with at least this many sub-folders below them keep a full category row. Smaller
+/// ones (most of them) add up their few descendants when asked instead of holding 72 bytes.
+const ROW_MIN_DIRS: u32 = 16;
+const NO_ROW: u32 = u32::MAX;
+/// A packed bucket entry is the category in the top 4 bits, then an end-of-list flag, then bytes.
+const LAST: u64 = 1 << 59;
+const BYTES: u64 = LAST - 1;
+
+/// Category totals for the nodes that need more than one category.
+#[derive(Default)]
+pub struct CatStore {
+    /// Full rows of the root and of big folders, kept up to date on remove and refresh.
+    rows: Vec<Cats>,
+    /// Bucket lists: only the non-zero categories, usually one or two. Buckets are replaced,
+    /// never changed, so a list is written once.
+    packed: Vec<u64>,
+}
+
+impl CatStore {
+    fn pack(&mut self, c: &Cats) -> u32 {
+        let off = self.packed.len() as u32;
+        for (i, v) in c.iter().enumerate().filter(|(_, v)| **v > 0) {
+            self.packed.push((i as u64) << 60 | (*v).min(BYTES));
+        }
+        if self.packed.len() as u32 == off {
+            self.packed.push(0);
+        }
+        *self.packed.last_mut().unwrap() |= LAST;
+        off
+    }
+
+    fn unpack(&self, off: u32) -> Cats {
+        let mut c = [0; CAT_COUNT];
+        for e in &self.packed[off as usize..] {
+            c[(e >> 60) as usize] += e & BYTES;
+            if e & LAST != 0 {
+                break;
+            }
+        }
+        c
+    }
+
+    fn new_row(&mut self, c: Cats) -> u32 {
+        self.rows.push(c);
+        (self.rows.len() - 1) as u32
+    }
+
+    pub fn shrink_to_fit(&mut self) {
+        self.rows.shrink_to_fit();
+        self.packed.shrink_to_fit();
+    }
+
+    /// Rows and packed entries, for the memory test.
+    #[cfg(test)]
+    pub fn counts(&self) -> (usize, usize) {
+        (self.rows.len(), self.packed.len())
+    }
+}
+
+/// One arena entry, kept at 64 bytes because a system drive has millions of them.
+/// Counts and Unix-second dates are u32 (dates fit until 2106). Category totals are in the
+/// tree's `CatStore` (see `cat`).
 #[derive(Debug)]
 pub struct Node {
-    pub name: String,
-    pub parent: u32,
+    pub name: Box<str>,
+    pub children: Box<[u32]>,
     pub size: u64,
-    pub files: u64,
-    pub dirs: u64,
+    pub parent: u32,
+    pub files: u32,
+    pub dirs: u32,
+    pub modified: u32,
+    /// Files: their `Cat` index, all their bytes are in it. Buckets: offset of their packed
+    /// list. Folders: their full row, or `NO_ROW` for a small one.
+    cat: u32,
     pub kind: Kind,
-    pub children: Vec<u32>,
-    pub cats: [u64; CAT_COUNT],
-    pub modified: u64,
+}
+
+impl Node {
+    /// An empty folder; `roll_up` fills in its totals.
+    pub fn dir(name: Box<str>, parent: u32) -> Node {
+        Node { name, children: Box::default(), size: 0, parent, files: 0, dirs: 0, modified: 0, cat: NO_ROW, kind: Kind::Dir }
+    }
+
+    pub fn file(name: Box<str>, parent: u32, size: u64, cat: Cat, modified: u32) -> Node {
+        Node { name, children: Box::default(), size, parent, files: 1, dirs: 0, modified, cat: cat.idx() as u32, kind: Kind::File }
+    }
+
+    pub fn bucket(name: Box<str>, parent: u32, size: u64, files: u32, modified: u32, cats: &Cats, store: &mut CatStore) -> Node {
+        Node { name, children: Box::default(), size, parent, files, dirs: 0, modified, cat: store.pack(cats), kind: Kind::Bucket }
+    }
+
+    /// Totals that need no walk: everything except a small folder.
+    fn own_cats(&self, store: &CatStore) -> Option<Cats> {
+        match self.kind {
+            Kind::File => {
+                let mut c = [0; CAT_COUNT];
+                c[self.cat as usize] = self.size;
+                Some(c)
+            }
+            Kind::Bucket => Some(store.unpack(self.cat)),
+            Kind::Dir if self.cat != NO_ROW => Some(store.rows[self.cat as usize]),
+            Kind::Dir => None,
+        }
+    }
+}
+
+/// Bytes per category below a node; a small folder sums its subtree.
+pub fn cats_of(nodes: &[Node], store: &CatStore, id: u32) -> Cats {
+    if let Some(c) = nodes[id as usize].own_cats(store) {
+        return c;
+    }
+    let mut out = [0; CAT_COUNT];
+    let mut stack = vec![id];
+    while let Some(i) = stack.pop() {
+        let n = &nodes[i as usize];
+        match n.own_cats(store) {
+            Some(c) => out.iter_mut().zip(c).for_each(|(t, v)| *t += v),
+            None => stack.extend(n.children.iter().copied()),
+        }
+    }
+    out
+}
+
+/// Roll sizes, counts, dates and categories up from the leaves. Every parent must come before
+/// its children in the arena, folders must be fresh from `Node::dir`, and node 0 is the root.
+pub fn roll_up(nodes: &mut [Node], store: &mut CatStore) {
+    for i in (1..nodes.len()).rev() {
+        let n = &nodes[i];
+        let (size, files, dirs, modified, is_dir, parent) = (n.size, n.files, n.dirs, n.modified, n.kind == Kind::Dir, n.parent as usize);
+        let p = &mut nodes[parent];
+        p.size += size;
+        p.files += files;
+        p.dirs += dirs + u32::from(is_dir);
+        p.modified = p.modified.max(modified);
+    }
+    for (i, n) in nodes.iter_mut().enumerate() {
+        if n.kind == Kind::Dir && (i == 0 || n.dirs >= ROW_MIN_DIRS) {
+            n.cat = store.new_row([0; CAT_COUNT]);
+        }
+    }
+    // Each leaf and each full row adds itself to the nearest full row above it. Children come
+    // after their parent, so a row is complete by the time it is passed on.
+    for i in (1..nodes.len()).rev() {
+        let Some(add) = nodes[i].own_cats(store) else { continue };
+        let mut p = nodes[i].parent as usize;
+        while nodes[p].cat == NO_ROW {
+            p = nodes[p].parent as usize;
+        }
+        let row = &mut store.rows[nodes[p].cat as usize];
+        row.iter_mut().zip(add).for_each(|(t, v)| *t += v);
+    }
+}
+
+/// Order every children list largest first.
+pub fn sort_children(nodes: &mut [Node]) {
+    for i in 0..nodes.len() {
+        let mut ch = std::mem::take(&mut nodes[i].children);
+        ch.sort_by_key(|c| std::cmp::Reverse(nodes[*c as usize].size));
+        nodes[i].children = ch;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -100,6 +257,8 @@ pub enum Kind {
 
 pub struct Tree {
     pub nodes: Vec<Node>,
+    /// Category totals of buckets and big folders, see `Node::cat`.
+    pub cats: CatStore,
     pub root_path: PathBuf,
     pub elapsed_ms: u64,
     pub errors: u64,
@@ -132,26 +291,37 @@ struct Scanned {
     name: String,
     kind: Kind,
     size: u64,
-    files: u64,
-    dirs: u64,
-    cats: [u64; CAT_COUNT],
-    modified: u64,
+    files: u32,
+    dirs: u32,
+    /// For a file only its own category is non-zero.
+    cats: Cats,
+    modified: u32,
     children: Vec<Scanned>,
 }
 
-fn mtime(md: &fs::Metadata) -> u64 {
+impl Scanned {
+    fn group(name: String, kind: Kind) -> Scanned {
+        Scanned { name, kind, size: 0, files: 0, dirs: 0, cats: [0; CAT_COUNT], modified: 0, children: Vec::new() }
+    }
+
+    fn file(name: String, size: u64, cat: Cat, modified: u32) -> Scanned {
+        let mut cats = [0; CAT_COUNT];
+        cats[cat.idx()] = size;
+        Scanned { name, kind: Kind::File, size, files: 1, dirs: 0, cats, modified, children: Vec::new() }
+    }
+}
+
+fn mtime(md: &fs::Metadata) -> u32 {
     md.modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
+        .map(|d| d.as_secs().min(u32::MAX as u64) as u32)
         .unwrap_or(0)
 }
 
 /// Windows "size on disk" is not exposed cheaply; apparent length is used everywhere.
 fn walk(path: &Path, name: String, progress: &Progress) -> Scanned {
-    let mut node = Scanned {
-        name, kind: Kind::Dir, size: 0, files: 0, dirs: 0, cats: [0; CAT_COUNT], modified: 0, children: Vec::new(),
-    };
+    let mut node = Scanned::group(name, Kind::Dir);
     progress.dirs.fetch_add(1, Ordering::Relaxed);
     if progress.cancel.load(Ordering::Relaxed) {
         return node;
@@ -165,9 +335,7 @@ fn walk(path: &Path, name: String, progress: &Progress) -> Scanned {
     };
 
     let mut subdirs: Vec<(PathBuf, String)> = Vec::new();
-    let mut bucket = Scanned {
-        name: String::new(), kind: Kind::Bucket, size: 0, files: 0, dirs: 0, cats: [0; CAT_COUNT], modified: 0, children: Vec::new(),
-    };
+    let mut bucket = Scanned::group(String::new(), Kind::Bucket);
     let path_lower = path.to_string_lossy().to_lowercase();
 
     for entry in rd.flatten() {
@@ -191,11 +359,7 @@ fn walk(path: &Path, name: String, progress: &Progress) -> Scanned {
         progress.bytes.fetch_add(len, Ordering::Relaxed);
         let modified = mtime(&md);
         if len >= FILE_NODE_MIN {
-            let mut cats = [0; CAT_COUNT];
-            cats[cat.idx()] = len;
-            node.children.push(Scanned {
-                name: fname, kind: Kind::File, size: len, files: 1, dirs: 0, cats, modified, children: Vec::new(),
-            });
+            node.children.push(Scanned::file(fname, len, cat, modified));
         } else {
             bucket.size += len;
             bucket.files += 1;
@@ -216,7 +380,7 @@ fn walk(path: &Path, name: String, progress: &Progress) -> Scanned {
     for c in &node.children {
         node.size += c.size;
         node.files += c.files;
-        node.dirs += c.dirs + u64::from(c.kind == Kind::Dir);
+        node.dirs += c.dirs + u32::from(c.kind == Kind::Dir);
         node.modified = node.modified.max(c.modified);
         for i in 0..CAT_COUNT {
             node.cats[i] += c.cats[i];
@@ -225,15 +389,26 @@ fn walk(path: &Path, name: String, progress: &Progress) -> Scanned {
     node
 }
 
-fn flatten(s: Scanned, parent: u32, out: &mut Vec<Node>) -> u32 {
+fn flatten(s: Scanned, parent: u32, out: &mut Vec<Node>, cats: &mut CatStore) -> u32 {
     let id = out.len() as u32;
-    out.push(Node {
-        name: s.name, parent, size: s.size, files: s.files, dirs: s.dirs, kind: s.kind,
-        children: Vec::with_capacity(s.children.len()), cats: s.cats, modified: s.modified,
-    });
-    let mut kids: Vec<u32> = s.children.into_iter().map(|c| flatten(c, id, out)).collect();
+    let name = s.name.into_boxed_str();
+    let n = match s.kind {
+        Kind::File => Node::file(name, parent, s.size, Cat::from_idx(s.cats.iter().position(|v| *v > 0).unwrap_or(Cat::Docs.idx())), s.modified),
+        Kind::Bucket => Node::bucket(name, parent, s.size, s.files, s.modified, &s.cats, cats),
+        Kind::Dir => {
+            let mut n = Node::dir(name, parent);
+            (n.size, n.files, n.dirs, n.modified) = (s.size, s.files, s.dirs, s.modified);
+            // Same rule as `roll_up`: the root and big folders keep a full row
+            if parent == NO_PARENT || s.dirs >= ROW_MIN_DIRS {
+                n.cat = cats.new_row(s.cats);
+            }
+            n
+        }
+    };
+    out.push(n);
+    let mut kids: Vec<u32> = s.children.into_iter().map(|c| flatten(c, id, out, cats)).collect();
     kids.sort_by(|a, b| out[*b as usize].size.cmp(&out[*a as usize].size));
-    out[id as usize].children = kids;
+    out[id as usize].children = kids.into_boxed_slice();
     id
 }
 
@@ -242,9 +417,13 @@ pub fn scan(root: &Path, progress: &Progress) -> Tree {
     let root_name = root.to_string_lossy().into_owned();
     let scanned = walk(root, root_name, progress);
     let mut nodes = Vec::with_capacity(1 << 16);
-    flatten(scanned, NO_PARENT, &mut nodes);
+    let mut cats = CatStore::default();
+    flatten(scanned, NO_PARENT, &mut nodes, &mut cats);
+    nodes.shrink_to_fit();
+    cats.shrink_to_fit();
     Tree {
         nodes,
+        cats,
         root_path: root.to_path_buf(),
         elapsed_ms: started.elapsed().as_millis() as u64,
         errors: progress.errors.load(Ordering::Relaxed),
@@ -260,7 +439,7 @@ impl Tree {
             if n.parent == NO_PARENT {
                 break;
             }
-            parts.push(n.name.as_str());
+            parts.push(&*n.name);
             cur = n.parent;
         }
         let mut p = self.root_path.clone();
@@ -270,8 +449,17 @@ impl Tree {
         p
     }
 
+    /// Bytes per category below a node.
+    pub fn cats_of(&self, id: u32) -> Cats {
+        cats_of(&self.nodes, &self.cats, id)
+    }
+
     pub fn dominant_cat(&self, id: u32) -> Cat {
-        let c = &self.nodes[id as usize].cats;
+        let n = &self.nodes[id as usize];
+        if n.kind == Kind::File {
+            return Cat::from_idx(n.cat as usize);
+        }
+        let c = self.cats_of(id);
         let (i, _) = c.iter().enumerate().max_by_key(|(_, v)| **v).unwrap_or((0, &0));
         Cat::ALL[i]
     }
@@ -280,12 +468,13 @@ impl Tree {
     pub fn remove(&mut self, id: u32) {
         let (size, files, cats, parent, is_dir) = {
             let n = &self.nodes[id as usize];
-            (n.size, n.files, n.cats, n.parent, n.kind == Kind::Dir)
+            (n.size, n.files, self.cats_of(id), n.parent, n.kind == Kind::Dir)
         };
         if parent == NO_PARENT {
             return;
         }
-        self.nodes[parent as usize].children.retain(|c| *c != id);
+        let p = &mut self.nodes[parent as usize];
+        p.children = p.children.iter().copied().filter(|c| *c != id).collect();
         let mut cur = parent;
         while cur != NO_PARENT {
             let n = &mut self.nodes[cur as usize];
@@ -294,8 +483,10 @@ impl Tree {
             if is_dir {
                 n.dirs = n.dirs.saturating_sub(1);
             }
-            for (c, sub) in n.cats.iter_mut().zip(cats) {
-                *c = c.saturating_sub(sub);
+            if n.cat != NO_ROW {
+                for (c, sub) in self.cats.rows[n.cat as usize].iter_mut().zip(cats) {
+                    *c = c.saturating_sub(sub);
+                }
             }
             cur = n.parent;
         }
@@ -310,7 +501,7 @@ impl Tree {
         while let Some(i) = stack.pop() {
             let n = &mut self.nodes[i as usize];
             n.size = 0;
-            stack.append(&mut n.children);
+            stack.extend(std::mem::take(&mut n.children));
         }
     }
 
@@ -365,13 +556,13 @@ impl Tree {
         };
         let progress = Progress::new();
         let path_lower = path.to_string_lossy().to_lowercase();
+        // Before the children are taken: a small folder's totals are summed from them
+        let old_cats = self.cats_of(id);
         let old_children = std::mem::take(&mut self.nodes[id as usize].children);
         let mut keep: Vec<u32> = Vec::new();
         let mut new_dirs: Vec<(PathBuf, String)> = Vec::new();
         let mut fresh: Vec<Scanned> = Vec::new();
-        let mut bucket = Scanned {
-            name: String::new(), kind: Kind::Bucket, size: 0, files: 0, dirs: 0, cats: [0; CAT_COUNT], modified: 0, children: Vec::new(),
-        };
+        let mut bucket = Scanned::group(String::new(), Kind::Bucket);
         for entry in rd.flatten() {
             let Ok(ft) = entry.file_type() else { continue };
             if ft.is_symlink() {
@@ -381,7 +572,7 @@ impl Tree {
             if ft.is_dir() {
                 let existing = old_children.iter().copied().find(|c| {
                     let n = &self.nodes[*c as usize];
-                    n.kind == Kind::Dir && n.name == fname
+                    n.kind == Kind::Dir && *n.name == *fname
                 });
                 match existing {
                     Some(c) => keep.push(c),
@@ -394,9 +585,7 @@ impl Tree {
             let cat = Cat::classify(&fname, &path_lower);
             let modified = mtime(&md);
             if len >= FILE_NODE_MIN {
-                let mut cats = [0; CAT_COUNT];
-                cats[cat.idx()] = len;
-                fresh.push(Scanned { name: fname, kind: Kind::File, size: len, files: 1, dirs: 0, cats, modified, children: Vec::new() });
+                fresh.push(Scanned::file(fname, len, cat, modified));
             } else {
                 bucket.size += len;
                 bucket.files += 1;
@@ -418,36 +607,48 @@ impl Tree {
         }
         let mut kids = keep;
         for s in fresh {
-            kids.push(flatten(s, id, &mut self.nodes));
+            kids.push(flatten(s, id, &mut self.nodes, &mut self.cats));
         }
         kids.sort_by_key(|c| std::cmp::Reverse(self.nodes[*c as usize].size));
 
         // New totals for this folder, then push the difference up the ancestor chain
-        let (mut size, mut files, mut dirs, mut cats, mut modified) = (0u64, 0u64, 0u64, [0u64; CAT_COUNT], 0u64);
+        let (mut size, mut files, mut dirs, mut cats, mut modified) = (0u64, 0u32, 0u32, [0u64; CAT_COUNT], 0u32);
         for c in &kids {
             let n = &self.nodes[*c as usize];
             size += n.size;
             files += n.files;
-            dirs += n.dirs + u64::from(n.kind == Kind::Dir);
+            dirs += n.dirs + u32::from(n.kind == Kind::Dir);
             modified = modified.max(n.modified);
-            for (t, s) in cats.iter_mut().zip(n.cats) {
+            for (t, s) in cats.iter_mut().zip(self.cats_of(*c)) {
                 *t += s;
             }
         }
         let n = &mut self.nodes[id as usize];
-        let (old_size, old_files, old_dirs, old_cats) = (n.size, n.files, n.dirs, n.cats);
-        n.children = kids;
-        (n.size, n.files, n.dirs, n.cats, n.modified) = (size, files, dirs, cats, modified.max(n.modified));
+        let (old_size, old_files, old_dirs) = (n.size, n.files, n.dirs);
+        n.children = kids.into_boxed_slice();
+        (n.size, n.files, n.dirs, n.modified) = (size, files, dirs, modified.max(n.modified));
+        if n.cat != NO_ROW {
+            self.cats.rows[n.cat as usize] = cats;
+        } else if dirs >= ROW_MIN_DIRS {
+            n.cat = self.cats.new_row(cats);
+        }
         let mut cur = n.parent;
         while cur != NO_PARENT {
             let a = &mut self.nodes[cur as usize];
             a.size = (a.size + size).saturating_sub(old_size);
             a.files = (a.files + files).saturating_sub(old_files);
             a.dirs = (a.dirs + dirs).saturating_sub(old_dirs);
-            for ((t, new), old) in a.cats.iter_mut().zip(cats).zip(old_cats) {
-                *t = (*t + new).saturating_sub(old);
+            let next = a.parent;
+            if a.cat != NO_ROW {
+                for ((t, new), old) in self.cats.rows[a.cat as usize].iter_mut().zip(cats).zip(old_cats) {
+                    *t = (*t + new).saturating_sub(old);
+                }
+            } else if a.dirs >= ROW_MIN_DIRS {
+                // Grew into a big folder: everything below is already up to date, so sum it once
+                let row = self.cats_of(cur);
+                self.nodes[cur as usize].cat = self.cats.new_row(row);
             }
-            cur = a.parent;
+            cur = next;
         }
         // Keep siblings ordered largest first after the size change
         let parent = self.nodes[id as usize].parent;
@@ -478,6 +679,66 @@ mod tests {
     }
 
     #[test]
+    fn node_stays_small() {
+        // A system drive has millions of nodes; every byte here is megabytes of RAM
+        assert_eq!(size_of::<Node>(), 64);
+    }
+
+    /// Category totals straight from the leaves, ignoring every stored row.
+    fn leaf_cats(t: &Tree, id: u32) -> Cats {
+        let mut out = [0; CAT_COUNT];
+        let mut stack = vec![id];
+        while let Some(i) = stack.pop() {
+            let n = &t.nodes[i as usize];
+            if n.kind == Kind::Dir {
+                stack.extend(n.children.iter().copied());
+            } else {
+                out.iter_mut().zip(n.own_cats(&t.cats).unwrap()).for_each(|(o, v)| *o += v);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn category_rows_stay_exact() {
+        let dir = std::env::temp_dir().join(format!("tessera-cats-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        // "big" has enough sub-folders for a full row; "small" is summed on demand
+        for i in 0..ROW_MIN_DIRS + 2 {
+            fs::create_dir_all(dir.join(format!("big/d{i}"))).unwrap();
+            fs::write(dir.join(format!("big/d{i}/a.txt")), vec![0u8; 10]).unwrap();
+            fs::write(dir.join(format!("big/d{i}/b.png")), vec![0u8; 20]).unwrap();
+        }
+        fs::create_dir_all(dir.join("small")).unwrap();
+        fs::write(dir.join("small/movie.mkv"), vec![0u8; FILE_NODE_MIN as usize]).unwrap();
+        let mut t = scan(&dir, &Progress::new());
+        let big = t.find_dir(&dir.join("big"));
+        let small = t.find_dir(&dir.join("small"));
+        assert_ne!(t.nodes[big as usize].cat, NO_ROW);
+        assert_eq!(t.nodes[small as usize].cat, NO_ROW);
+        for id in [0, big, small] {
+            assert_eq!(t.cats_of(id), leaf_cats(&t, id));
+        }
+
+        // Refresh below a full row, then remove a file under it
+        let before = t.cats_of(big);
+        fs::write(dir.join("big/d0/c.mp4"), vec![0u8; 5]).unwrap();
+        t.refresh_dir(t.find_dir(&dir.join("big").join("d0")));
+        assert_eq!(t.cats_of(big).iter().sum::<u64>(), before.iter().sum::<u64>() + 5);
+        t.remove(t.find_dir(&dir.join("big").join("d1")));
+        // Grow "small" past the threshold through a refresh: it gets a row of its own
+        for i in 0..ROW_MIN_DIRS {
+            fs::create_dir_all(dir.join(format!("small/s{i}"))).unwrap();
+        }
+        t.refresh_dir(small);
+        assert_ne!(t.nodes[small as usize].cat, NO_ROW);
+        for id in [0, big, small] {
+            assert_eq!(t.cats_of(id), leaf_cats(&t, id));
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn scans_and_removes() {
         let dir = std::env::temp_dir().join(format!("tessera-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -492,7 +753,7 @@ mod tests {
 
         // Largest child first: the "big" folder, holding the file node
         let big = tree.nodes[0].children[0];
-        assert_eq!(tree.nodes[big as usize].name, "big");
+        assert_eq!(&*tree.nodes[big as usize].name, "big");
         let blob = tree.nodes[big as usize].children[0];
         assert_eq!(tree.path_of(blob), dir.join("big").join("blob.iso"));
 
@@ -519,7 +780,7 @@ mod tests {
         fs::create_dir_all(dir.join("a/new")).unwrap();
         fs::write(dir.join("a/new/y.bin"), vec![0u8; 50]).unwrap();
         let a = tree.find_dir(&dir.join("a").join("new"));
-        assert_eq!(tree.nodes[a as usize].name, "a", "new folder is not in the tree yet");
+        assert_eq!(&*tree.nodes[a as usize].name, "a","new folder is not in the tree yet");
         let delta = tree.refresh_dir(a);
         assert_eq!(delta, 55);
         assert_eq!(tree.nodes[0].size, 160);

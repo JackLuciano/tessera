@@ -2,6 +2,8 @@ mod backup;
 mod bench;
 mod cache;
 mod care;
+#[cfg(windows)]
+mod cputemp;
 mod delete;
 mod diskhealth;
 #[cfg(windows)]
@@ -65,6 +67,18 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// Hand memory the allocator is holding for reuse back to the OS right away.
+pub(crate) fn return_memory() {
+    // SAFETY: mi_collect only walks the allocator's own free lists
+    unsafe { libmimalloc_sys::mi_collect(true) };
+}
+
+/// How long the main window stays in the tray before the scan tree is let go.
+const RELEASE_AFTER: Duration = Duration::from_secs(120);
+
 pub(crate) struct AppState {
     tree: Mutex<Option<Tree>>,
     progress: Mutex<Option<Arc<Progress>>>,
@@ -81,6 +95,8 @@ pub(crate) struct AppState {
     pub(crate) tray: Mutex<Option<tray::TrayItems>>,
     /// Started by a scheduled Care run (`--care`): the window stays hidden until opened.
     hidden_start: AtomicBool,
+    /// Bumped on every hide and show of the main window, so a pending tree release can tell it's stale.
+    pub(crate) hide_epoch: AtomicU64,
 }
 
 impl Default for AppState {
@@ -98,8 +114,58 @@ impl Default for AppState {
             labels: Mutex::default(),
             tray: Mutex::default(),
             hidden_start: AtomicBool::new(false),
+            hide_epoch: AtomicU64::new(0),
         }
     }
+}
+
+/// The main window went to the tray. A full scan tree is easily a few hundred MB, so once it has
+/// stayed hidden for a while the tree is saved and dropped; the window reloads the saved scan
+/// (with catch-up) when it comes back (`tree-released`).
+pub(crate) fn release_when_hidden(app: &AppHandle) {
+    let epoch = app.state::<AppState>().hide_epoch.fetch_add(1, Ordering::Relaxed) + 1;
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(RELEASE_AFTER);
+        let st = app.state::<AppState>();
+        let hidden = app.get_webview_window("main").is_some_and(|w| !w.is_visible().unwrap_or(true));
+        let busy = st.progress.lock().is_some() || st.dup_progress.lock().is_some();
+        if st.hide_epoch.load(Ordering::Relaxed) != epoch || !hidden || busy {
+            return;
+        }
+        release_tree(&app, &st);
+    });
+}
+
+fn release_tree(app: &AppHandle, st: &AppState) {
+    let Ok(base) = app.path().app_data_dir() else { return };
+    let Some(root) = st.tree.lock().as_ref().map(|t| t.root_path.clone()) else { return };
+    // Position before the watcher stops: anything after it is caught up when the scan reopens
+    let meta = cache::Meta { saved_at: cache::now(), journal: journal_position(&root) };
+    *st.watch.lock() = None;
+    let generation = st.generation.load(Ordering::Relaxed);
+    let Some(raw) = st.tree.lock().as_ref().map(|t| cache::encode(t, &meta)) else { return };
+    let root_str = root.to_string_lossy().into_owned();
+    if let Err(e) = cache::write(&base, &root_str, &raw) {
+        // Without a saved copy the tree can't come back, so keep it
+        eprintln!("could not save the scan cache, keeping the tree in memory: {e}");
+        start_watch(app, st);
+        return;
+    }
+    drop(raw);
+    let old = {
+        let mut g = st.tree.lock();
+        // A scan or reload replaced the tree meanwhile: that one is not the one just saved
+        if st.generation.load(Ordering::Relaxed) != generation {
+            return;
+        }
+        st.generation.fetch_add(1, Ordering::Relaxed);
+        g.take()
+    };
+    // Millions of nodes take a moment to free; not under the lock
+    drop(old);
+    return_memory();
+    let _ = app.emit("tree-released", root_str);
 }
 
 #[derive(Serialize, Clone)]
@@ -127,7 +193,7 @@ fn start_watch(app: &AppHandle, state: &AppState) {
             ids.sort_unstable();
             ids.dedup();
             let delta: i64 = ids.iter().map(|id| t.refresh_dir(*id)).sum();
-            LiveEvent { folders: ids.len(), delta, size: t.nodes[0].size, files: t.nodes[0].files }
+            LiveEvent { folders: ids.len(), delta, size: t.nodes[0].size, files: t.nodes[0].files.into() }
         };
         let _ = handle.emit("live-change", ev);
     });
@@ -218,8 +284,9 @@ struct CatTotal {
 
 fn summary(t: &Tree, engine: &'static str) -> ScanSummary {
     let r = &t.nodes[0];
+    let totals = t.cats_of(0);
     let mut cats: Vec<CatTotal> = (0..CAT_COUNT)
-        .map(|i| CatTotal { cat: Cat::ALL[i], size: r.cats[i] })
+        .map(|i| CatTotal { cat: Cat::ALL[i], size: totals[i] })
         .filter(|c| c.size > 0)
         .collect();
     cats.sort_by_key(|c| std::cmp::Reverse(c.size));
@@ -227,8 +294,8 @@ fn summary(t: &Tree, engine: &'static str) -> ScanSummary {
         engine,
         root: t.root_path.to_string_lossy().into_owned(),
         size: r.size,
-        files: r.files,
-        dirs: r.dirs,
+        files: r.files.into(),
+        dirs: r.dirs.into(),
         elapsed_ms: t.elapsed_ms,
         errors: t.errors,
         cats,
@@ -399,7 +466,7 @@ async fn load_cached(root: String, app: AppHandle, state: State<'_, AppState>) -
             ids.sort_unstable();
             ids.dedup();
             let delta: i64 = ids.iter().map(|id| t.refresh_dir(*id)).sum();
-            LiveEvent { folders: ids.len(), delta, size: t.nodes[0].size, files: t.nodes[0].files }
+            LiveEvent { folders: ids.len(), delta, size: t.nodes[0].size, files: t.nodes[0].files.into() }
         };
         let _ = handle.emit("catchup-done", &ev);
         start_watch(&handle, &st);
@@ -780,14 +847,14 @@ fn dto(t: &Tree, id: u32, depth: u32, max_children: usize, min_size: u64, top: b
     };
     NodeDto {
         id,
-        name: if n.parent == NO_PARENT && id == 0 { t.root_path.to_string_lossy().into_owned() } else { n.name.clone() },
+        name: if n.parent == NO_PARENT && id == 0 { t.root_path.to_string_lossy().into_owned() } else { n.name.to_string() },
         path: t.path_of(id).to_string_lossy().into_owned(),
         size: n.size,
-        files: n.files,
-        dirs: n.dirs,
+        files: n.files.into(),
+        dirs: n.dirs.into(),
         kind: n.kind,
         cat: t.dominant_cat(id),
-        modified: n.modified,
+        modified: n.modified.into(),
         child_count: n.children.len(),
         children,
     }
@@ -818,7 +885,7 @@ fn get_ancestors(id: u32, state: State<'_, AppState>) -> Result<Vec<(u32, String
     let mut cur = id;
     while cur != NO_PARENT && (cur as usize) < t.nodes.len() {
         let n = &t.nodes[cur as usize];
-        out.push((cur, if cur == 0 { t.root_path.to_string_lossy().into_owned() } else { n.name.clone() }));
+        out.push((cur, if cur == 0 { t.root_path.to_string_lossy().into_owned() } else { n.name.to_string() }));
         cur = n.parent;
     }
     out.reverse();
@@ -848,7 +915,7 @@ fn largest_files(limit: usize, state: State<'_, AppState>) -> Result<Vec<FileDto
         .into_iter()
         .map(|id| {
             let n = &t.nodes[id as usize];
-            FileDto { id, name: n.name.clone(), path: t.path_of(id).to_string_lossy().into_owned(), size: n.size, cat: t.dominant_cat(id), modified: n.modified }
+            FileDto { id, name: n.name.to_string(), path: t.path_of(id).to_string_lossy().into_owned(), size: n.size, cat: t.dominant_cat(id), modified: n.modified.into() }
         })
         .collect())
 }
@@ -907,7 +974,7 @@ fn find_junk(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<JunkGroup
                 return None;
             }
             let full = t.path_of(id).to_string_lossy().into_owned();
-            custom.iter().position(|r| rules::matches(r, &n.name, &full, n.modified, now)).map(|i| rules.len() + i)
+            custom.iter().position(|r| rules::matches(r, &n.name, &full, n.modified.into(), now)).map(|i| rules.len() + i)
         });
         if id != 0
             && let Some(i) = hit
@@ -960,7 +1027,7 @@ fn junk_rule_preview(rule: rules::Rule, state: State<'_, AppState>) -> Result<Ru
             continue;
         }
         let full = t.path_of(id).to_string_lossy().into_owned();
-        if id != 0 && rules::matches(&rule, &n.name, &full, n.modified, now) {
+        if id != 0 && rules::matches(&rule, &n.name, &full, n.modified.into(), now) {
             out.size += n.size;
             out.count += 1;
             if out.sample.len() < 6 {
@@ -1658,6 +1725,36 @@ struct SensorHistory {
 #[tauri::command]
 fn sensors_history() -> SensorHistory {
     SensorHistory { history: sensors::history(), throttle: sensors::throttle_events(), trend: sensors::trend() }
+}
+
+#[derive(Serialize)]
+struct CpuDriver {
+    /// The optional CPU temperature driver (PawnIO) can be offered here: Windows on Intel or AMD Zen.
+    supported: bool,
+    installed: Option<String>,
+}
+
+#[tauri::command]
+fn cpu_driver() -> CpuDriver {
+    #[cfg(windows)]
+    return CpuDriver { supported: cputemp::supported(), installed: cputemp::installed_version() };
+    #[cfg(not(windows))]
+    CpuDriver { supported: false, installed: None }
+}
+
+/// Install PawnIO for the real CPU temperature; true when Windows wants a restart first.
+#[tauri::command]
+async fn cpu_driver_install(app: AppHandle) -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        let base = data_dir(&app)?;
+        blocking(move || cputemp::install(&base)).await?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Err(WINDOWS_ONLY.into())
+    }
 }
 
 #[tauri::command]
@@ -2485,7 +2582,7 @@ fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
                 disk_health, disk_optimize, registry_scan, registry_fix, registry_backups, registry_undo, programs_list, program_uninstall,
                 program_leftovers, leftovers_remove, updates_list, update_install, net_status, net_set_dns, net_latency, net_flush,
                 net_set_tcp, net_restore, net_repair, care_config, care_set_config, care_scan, care_fix, prefs_get, prefs_set, tray_labels,
-                launch_state, sensors_now, sensors_history, ping_get, ping_gateway, battery_info, stats_report, widget_set,
+                launch_state, sensors_now, sensors_history, cpu_driver, cpu_driver_install, ping_get, ping_gateway, battery_info, stats_report, widget_set,
                 settings_export, settings_import, open_uri, slow_check, junk_rules_get, junk_rules_set, junk_rule_preview,
                 bench_history, bench_delete, bench_run, backup_config, backup_set_config, backup_run, backup_snapshots, backup_suggestions,
                 lan_info, lan_set, lan_discover, lan_peers, lan_add, lan_remove
