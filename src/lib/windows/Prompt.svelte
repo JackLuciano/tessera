@@ -3,9 +3,10 @@
   import { api } from '../api';
   import { t } from '../i18n.svelte';
   import Icon from '../Icon.svelte';
+  import { PROMPT_GAME } from './small';
 
   // "Boost <game>?" — asked when a game starts and its setting is "ask". No answer = not now.
-  const game = new URLSearchParams(location.search).get('game') ?? '';
+  const game = PROMPT_GAME;
   const SECONDS = 20;
   let left = $state(SECONDS);
   let remember = $state(false);

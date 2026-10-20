@@ -54,9 +54,10 @@
   import Overlay from '$lib/windows/Overlay.svelte';
   import Widget from '$lib/windows/Widget.svelte';
   import Prompt from '$lib/windows/Prompt.svelte';
+  import { SMALL_KIND } from '$lib/windows/small';
 
   /** Small extra windows (FPS window, widget, boost prompt) load this page with ?window=… */
-  const SMALL = new URLSearchParams(location.search).get('window');
+  const SMALL = SMALL_KIND;
   const SMALL_VIEWS: Record<string, typeof Overlay> = { overlay: Overlay, widget: Widget, prompt: Prompt };
 
   const VIEWS: Record<View, typeof Care> = {

@@ -297,6 +297,13 @@ pub fn on_close(app: &AppHandle) -> bool {
     true
 }
 
+/// Tells the page which small window it is (overlay, widget, prompt) and, for the prompt, the game.
+/// A query string can't be used: in a packaged build `index.html?window=…` is looked up as a file
+/// name and gives a 404.
+pub fn small_window_script(kind: &str, game: &str) -> String {
+    format!("window.__TESSERA_WINDOW = {};", serde_json::json!({ "window": kind, "game": game }))
+}
+
 /// Top-left position (logical) for a `w`×`h` window in a corner (tl, tr, bl, br) of a monitor.
 pub fn corner_pos(m: &tauri::Monitor, corner: &str, w: f64, h: f64) -> (f64, f64) {
     let scale = m.scale_factor();
@@ -339,7 +346,8 @@ pub fn small_window(app: &AppHandle, label: &str, on: bool, w: f64, h: f64, corn
     let label = label.to_string();
     let corner = corner.to_string();
     std::thread::spawn(move || {
-        let mut b = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(format!("index.html?window={label}").into()))
+        let mut b = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("index.html".into()))
+            .initialization_script(small_window_script(&label, ""))
             .title("Tessera")
             .inner_size(w, h)
             .decorations(false)

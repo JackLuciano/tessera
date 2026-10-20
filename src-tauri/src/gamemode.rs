@@ -474,9 +474,9 @@ pub fn reports(base: &Path) -> Vec<SessionReport> {
 
 fn show_prompt(app: &AppHandle, g: &Game) {
     close_prompt(app);
-    let url = format!("index.html?window=prompt&game={}", urlencode(&g.name));
     let (w, h) = (380.0, 128.0);
-    let mut b = tauri::WebviewWindowBuilder::new(app, "prompt", tauri::WebviewUrl::App(url.into()))
+    let mut b = tauri::WebviewWindowBuilder::new(app, "prompt", tauri::WebviewUrl::App("index.html".into()))
+        .initialization_script(crate::tray::small_window_script("prompt", &g.name))
         .title("Tessera")
         .inner_size(w, h)
         .decorations(false)
@@ -504,12 +504,6 @@ fn close_prompt(app: &AppHandle) {
     }
 }
 
-pub fn urlencode(s: &str) -> String {
-    s.bytes()
-        .map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,6 +516,5 @@ mod tests {
         assert_eq!(boost_mode(&cfg, "steam:730"), "always");
         assert!(helper("UnityCrashHandler64.exe"));
         assert!(!helper("cs2.exe"));
-        assert_eq!(urlencode("Hades II"), "Hades%20II");
     }
 }
