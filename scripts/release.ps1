@@ -81,7 +81,8 @@ if ($DryRun) { Write-Host 'Dry run: nothing published.' -ForegroundColor Yellow;
 Invoke-Checked { git tag -a $tag -m "Tessera $tag" } 'git tag'
 Invoke-Checked { git push origin $tag } 'git push tag'
 $assets = @($setup.FullName, "$($setup.FullName).sig", $msi.FullName, "$($msi.FullName).sig", $latestPath)
-$noteArgs = if ($NotesFile) { @('--notes-file', $NotesFile) } else { @('--generate-notes') }
+# @(...) keeps a one-item result an array; a bare string would be splatted character by character
+$noteArgs = @(if ($NotesFile) { '--notes-file', $NotesFile } else { '--generate-notes' })
 # GitHub can take a while to see a freshly pushed tag, and --verify-tag fails until it does: wait for
 # the API to know the tag (up to 3 minutes) before creating the release
 Write-Host "Waiting for GitHub to see $tag..."
