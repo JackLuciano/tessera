@@ -27,8 +27,11 @@ export interface DeleteProgress { done: number; total: number; bytes: number; to
 
 export interface Prefs {
   close_to_tray: boolean; tray_meter: boolean; tray_hint_shown: boolean; widget: boolean; widget_on_top: boolean;
-  hotkeys_enabled: boolean; hotkeys: Record<string, string>; weekly: boolean;
+  hotkeys_enabled: boolean; hotkeys: Record<string, string>; weekly: boolean; overlay: OverlayCfg;
 }
+/** Look of the in-game FPS window; `fields`: fps, low1, frametime, graph, cpu, gpu, temps, ping. */
+export interface OverlayCfg { corner: 'tl' | 'tr' | 'bl' | 'br'; scale: number; opacity: number; fields: string[]; compact: boolean }
+export const OVERLAY_DEFAULT: OverlayCfg = { corner: 'tl', scale: 1, opacity: 0.9, fields: ['fps', 'low1', 'frametime', 'graph', 'cpu', 'gpu', 'ping'], compact: false };
 export type RestorePoint = 'created' | 'recent' | 'session' | 'needs_admin' | 'unavailable' | 'unsupported';
 export interface SysJunk { key: string; safe: boolean; admin: boolean; size: number; count: number; sample: string[] }
 export interface CleanOutcome { freed: number; cleaned: number; locked: number; failed: string[] }
@@ -64,9 +67,24 @@ export interface GameModeConfig {
   enabled: boolean; default_boost: 'ask' | 'always' | 'never'; switch_plan: boolean; apply_profile: boolean; close: string[]; keep: string[];
   reopen: boolean; clear_standby: boolean; timer: boolean; unpark: boolean; record_fps: boolean; overlay: boolean;
   custom: [string, string][]; per_game: Record<string, GameSettings>;
+  net_limit: boolean; net_apps: string[]; net_mbps: number; net_updates: boolean;
 }
+export interface UpdateLeftover { path: string; size: number; kind: string }
+export interface GameUpdate { game_id: string; game: string; at: number; from: string; to: string; items: UpdateLeftover[] }
+export interface GfxBackup { file: string; at: number }
+export interface GfxConfig {
+  project: string; name: string; path: string; groups: Record<string, number>; resolution: number | null;
+  vsync: boolean | null; frame_limit: number | null; modified: number; backups: GfxBackup[];
+}
+export interface GfxChange { groups: Record<string, number>; resolution?: number | null; vsync?: boolean | null; frame_limit?: number | null }
 export interface ThrottleEvent { start: number; end: number; kind: string; worst: number }
-export interface FpsSummary { game: string; exe: string; start: number; seconds: number; frames: number; avg: number; low1: number; low01: number; timeline: number[] }
+export interface FpsLatency { display_ms: number; vsync: number; tearing: number; present_mode: string; dropped: number; gpu_busy: number | null }
+/** cause: thermal, disk, background, cpu, gpu, game */
+export interface Stutter { sec: number; ms: number; cause: string; detail: string }
+export interface FpsSummary {
+  game: string; exe: string; start: number; seconds: number; frames: number; avg: number; low1: number; low01: number; timeline: number[];
+  latency?: FpsLatency | null; stutters?: Stutter[]; refresh?: number;
+}
 export interface FpsSample { fps: number; low1: number; frametime: number; recent: number[]; game: string }
 export interface GameSession { game_id: string; game: string; start: number; end: number; boosted: boolean; closed: string[]; throttle: ThrottleEvent[]; fps: FpsSummary | null }
 export interface GameStatus { game: Game | null; boosted: boolean; since: number; closed: string[]; pending: Game | null }
@@ -85,7 +103,49 @@ export interface Battery { present: boolean; name: string; design: number; full:
 export interface Crash { at: number; kind: 'app_crash' | 'app_hang' | 'bsod' | 'power_loss'; app: string; module: string; culprit: string | null; code: string }
 export interface Security { defender: boolean | null; realtime: boolean | null; signature_age: number | null; firewall: boolean | null; bitlocker: boolean | null; secure_boot: boolean | null; uac: boolean | null }
 export interface UpdateStatus { last_install: number | null; last_title: string | null; reboot_pending: boolean; service_running: boolean | null }
-export interface BootInfo { last_boot: number | null; history: [number, number, number, number][]; slow: [string, number][]; needs_admin: boolean }
+export interface BootRun { at: number; total: number; main: number; post: number; items: [string, number, string][] }
+export interface StartupTiming { id: string; name: string; after: number; memory: number }
+export interface BootInfo {
+  last_boot: number | null; history: [number, number, number, number][]; slow: [string, number][]; needs_admin: boolean;
+  runs?: BootRun[]; startup?: StartupTiming[];
+}
+export interface SlowProc { name: string; pid: number; cpu: number; memory: number; disk: number; known: string | null }
+/** kind: cpu, memory, disk, thermal, known, startup, fine; level 0 info, 1 worth a look, 2 likely cause */
+export interface SlowFinding { kind: string; level: number; subject: string; value: number; page: string | null }
+export interface SlowReport {
+  cpu: number; ram_used: number; ram_total: number; disk_busy: number | null; net_down: number; net_up: number;
+  top_cpu: SlowProc[]; top_mem: SlowProc[]; top_disk: SlowProc[]; findings: SlowFinding[];
+}
+export interface LanInfo { enabled: boolean; code: string; name: string; addresses: string[]; port: number }
+export interface PcStatus {
+  name: string; version: string; os: string; uptime: number; care_score: number | null; care_at: number; cpu_load: number; cpu_temp: number | null;
+  gpu_name: string; gpu_load: number | null; gpu_temp: number | null; ram_used: number; ram_total: number; disks: [string, number, number][]; at: number;
+}
+export interface PeerState { peer: { name: string; addr: string; code: string }; status: PcStatus | null; error: string | null }
+export interface BenchRun {
+  at: number; cpu_single: number; cpu_multi: number; memory: number; disk_read: number; disk_write: number; disk_iops: number;
+  gpu: number | null; driver: string; profile: string; drive: string; threads: number;
+}
+export interface BackupJob {
+  id: string; name: string; sources: string[]; target: string; keep: number; schedule: 'off' | 'daily' | 'weekly';
+  last_run: number; last_error: string; last_size: number;
+}
+export interface BackupConfig { jobs: BackupJob[]; time: string }
+export interface BackupOutcome { copied: number; linked: number; bytes: number; failed: string[]; snapshot: string }
+/** kind: "name" (folder name) or "path" (full path); `*` and `?` wildcards. */
+export interface JunkRule { id: string; name: string; kind: 'name' | 'path'; pattern: string; min_age_days: number; safe: boolean; enabled: boolean }
+export interface RulePreview { size: number; count: number; sample: string[] }
+export interface UpdateDone { id: string; name: string; from: string; to: string; at: number; rolled_back: boolean }
+export interface DriverPackage {
+  inf: string; original: string; provider: string; class: string; version: string; date: number; size: number;
+  in_use: boolean; newest: boolean; removable: boolean;
+}
+export interface DriverStore { packages: DriverPackage[]; removable_bytes: number; needs_admin: boolean }
+export interface WakeEvent { at: number; slept: number; source: string; timer_owner: string }
+export interface WakeInfo {
+  wakes: WakeEvent[]; devices: string[]; tasks: { path: string; name: string; system: boolean }[];
+  blockers: { kind: string; who: string; reason: string }[]; blockers_need_admin: boolean;
+}
 export interface Driver { name: string; vendor: string; version: string; date: number | null; display_version: string; download: string }
 export interface StatsReport { from: number; to: number; freed: number; freed_by: [string, number][]; games: [string, number, number | null][]; care: [number, number][]; daily_freed: number[] }
 export interface CareFix { freed: number; fixed: number; failed: string[]; running: string[]; restore_point: RestorePoint | null; registry_backup: string | null }
@@ -98,6 +158,11 @@ export const api = {
   ancestors: (id: number) => invoke<[number, string][]>('get_ancestors', { id }),
   largestFiles: (limit = 300) => invoke<FileEntry[]>('largest_files', { limit }),
   junk: () => invoke<JunkGroup[]>('find_junk'),
+  junkRules: {
+    get: () => invoke<JunkRule[]>('junk_rules_get'),
+    set: (rules: JunkRule[]) => invoke<void>('junk_rules_set', { rules }),
+    preview: (rule: JunkRule) => invoke<RulePreview>('junk_rule_preview', { rule }),
+  },
   delete: (ids: number[], permanent: boolean, shred = false) => invoke<DeleteResult>('delete_nodes', { ids, permanent, shred }),
   cancelDelete: () => invoke<void>('cancel_delete'),
   reveal: (path: string) => invoke<void>('reveal', { path }),
@@ -145,7 +210,12 @@ export const api = {
   leftovers: (program: Program) => invoke<Leftover[]>('program_leftovers', { program }),
   removeLeftovers: (items: Leftover[]) => invoke<LeftoverFix>('leftovers_remove', { items }),
   updates: () => invoke<{ available: boolean; items: Upgrade[] }>('updates_list'),
-  installUpdate: (id: string) => invoke<void>('update_install', { id }),
+  installUpdate: (u: Upgrade) => invoke<void>('update_install', { id: u.id, name: u.name, from: u.version, to: u.available }),
+  updateHistory: () => invoke<{ done: UpdateDone[]; pins: string[] }>('update_history'),
+  rollbackUpdate: (at: number, pin: boolean) => invoke<void>('update_rollback', { at, pin }),
+  pinUpdate: (id: string, on: boolean) => invoke<void>('update_pin', { id, on }),
+  driverStore: () => invoke<DriverStore>('driverstore_scan'),
+  driverStoreRemove: (infs: string[]) => invoke<{ removed: string[]; failed: string[] }>('driverstore_remove', { infs }),
   net: {
     status: () => invoke<NetStatus>('net_status'),
     setDns: (preset: string) => invoke<number>('net_set_dns', { preset }),
@@ -171,6 +241,13 @@ export const api = {
     setExe: (exe: string, settings: ExeSettings) => invoke<void>('game_set_exe', { exe, settings }),
     leftovers: () => invoke<GameLeftover[]>('game_leftovers'),
     remove: (paths: string[]) => invoke<{ freed: number; failed: string[] }>('game_remove_paths', { paths }),
+    updates: () => invoke<GameUpdate[]>('game_updates'),
+    cleanUpdates: (paths: string[]) => invoke<{ freed: number; failed: string[] }>('game_updates_clean', { paths }),
+  },
+  gfx: {
+    list: () => invoke<GfxConfig[]>('gfx_list'),
+    save: (path: string, change: GfxChange) => invoke<void>('gfx_save', { path, change }),
+    restore: (path: string, file: string) => invoke<void>('gfx_restore', { path, file }),
   },
   gamemode: {
     config: () => invoke<GameModeConfig>('gamemode_config'),
@@ -182,12 +259,13 @@ export const api = {
     runningApps: () => invoke<RunningApp[]>('running_apps'),
   },
   fps: {
-    status: () => invoke<{ tool_ready: boolean; recording: string | null; elevated: boolean; overlay: boolean }>('fps_status'),
+    status: () => invoke<{ tool_ready: boolean; recording: string | null; elevated: boolean; overlay: boolean; phase: string | null }>('fps_status'),
     start: (exe: string, game: string) => invoke<void>('fps_start', { exe, game }),
     stop: () => invoke<FpsSummary | null>('fps_stop'),
     sessions: () => invoke<FpsSummary[]>('fps_sessions'),
     remove: (start: number) => invoke<void>('fps_delete', { start }),
     overlay: (on: boolean) => invoke<void>('overlay_set', { on }),
+    fit: (w: number, h: number) => invoke<void>('overlay_fit', { w, h }),
   },
   sensors: () => invoke<Snapshot | null>('sensors_now'),
   sensorHistory: () => invoke<SensorHistory>('sensors_history'),
@@ -209,6 +287,32 @@ export const api = {
     reset: () => invoke<void>('winupdate_reset'),
   },
   boot: () => invoke<BootInfo>('boot_info'),
+  slowCheck: () => invoke<SlowReport>('slow_check'),
+  lan: {
+    info: () => invoke<LanInfo>('lan_info'),
+    set: (enabled: boolean, newCode = false) => invoke<void>('lan_set', { enabled, newCode }),
+    discover: () => invoke<[string, string][]>('lan_discover'),
+    peers: () => invoke<PeerState[]>('lan_peers'),
+    add: (addr: string, code: string) => invoke<PcStatus>('lan_add', { addr, code }),
+    remove: (addr: string) => invoke<void>('lan_remove', { addr }),
+  },
+  bench: {
+    history: () => invoke<BenchRun[]>('bench_history'),
+    remove: (at: number) => invoke<void>('bench_delete', { at }),
+    run: (dir: string | null, gpu: number | null) => invoke<BenchRun>('bench_run', { dir, gpu }),
+  },
+  backup: {
+    config: () => invoke<BackupConfig>('backup_config'),
+    setConfig: (config: BackupConfig) => invoke<void>('backup_set_config', { config }),
+    run: (id: string) => invoke<BackupOutcome>('backup_run', { id }),
+    snapshots: (id: string) => invoke<{ name: string; path: string }[]>('backup_snapshots', { id }),
+    suggestions: () => invoke<[string, string, number][]>('backup_suggestions'),
+  },
+  wake: {
+    info: () => invoke<WakeInfo>('wake_info'),
+    setDevice: (name: string, wake: boolean) => invoke<void>('wake_set_device', { name, wake }),
+    taskOff: (path: string, name: string) => invoke<void>('wake_task_off', { path, name }),
+  },
   drivers: () => invoke<Driver[]>('drivers_list'),
   componentCleanup: () => invoke<number>('component_cleanup'),
   report: (days: number) => invoke<StatsReport>('stats_report', { days }),

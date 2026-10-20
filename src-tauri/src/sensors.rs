@@ -55,6 +55,8 @@ pub struct Snapshot {
     pub sensors: Vec<(String, f32)>,
     /// Fan speeds (label, RPM) where the platform exposes them.
     pub fans: Vec<(String, f32)>,
+    /// Share of time the disks were busy, 0–100 (Windows).
+    pub disk_busy: Option<f32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -193,6 +195,7 @@ const COUNTERS: &[&str] = &[
     r"\Memory\Standby Cache Normal Priority Bytes",
     r"\Memory\Standby Cache Reserve Bytes",
     r"\Memory\Standby Cache Core Bytes",
+    r"\PhysicalDisk(_Total)\% Idle Time",
 ];
 
 #[cfg(windows)]
@@ -234,6 +237,7 @@ impl Sampler {
             s.sensors = zones;
             let standby: f64 = [6, 7, 8].iter().filter_map(|i| get(COUNTERS[*i])).sum();
             s.ram_standby = (standby > 0.0).then_some(standby as u64);
+            s.disk_busy = get(COUNTERS[9]).map(|idle| (100.0 - idle).clamp(0.0, 100.0) as f32);
             // 3D engine load per adapter (instance names contain luid_0x..._0x...)
             let mut per_adapter: BTreeMap<String, f64> = BTreeMap::new();
             for (k, val) in v.iter().filter(|(k, _)| k.starts_with(r"\GPU Engine")) {

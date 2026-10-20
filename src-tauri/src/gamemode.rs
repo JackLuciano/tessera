@@ -55,6 +55,14 @@ pub struct Config {
     /// Games added by hand: (name, exe path).
     pub custom: Vec<(String, String)>,
     pub per_game: BTreeMap<String, GameSettings>,
+    /// Cap the bandwidth of `net_apps` while a game is boosted (Windows QoS, needs admin).
+    pub net_limit: bool,
+    /// Process names (lowercase, without .exe) whose bandwidth is capped.
+    pub net_apps: Vec<String>,
+    /// The cap per app, in megabits per second.
+    pub net_mbps: u32,
+    /// Also cap Windows Update downloads.
+    pub net_updates: bool,
 }
 
 impl Default for Config {
@@ -75,6 +83,11 @@ impl Default for Config {
             overlay: true,
             custom: Vec::new(),
             per_game: BTreeMap::new(),
+            net_limit: false,
+            // Launchers and sync clients that download in the background
+            net_apps: ["steam", "epicgameslauncher", "battle.net", "eadesktop", "ubisoftconnect", "onedrive", "dropbox", "googledrivefs", "qbittorrent"].iter().map(|s| s.to_string()).collect(),
+            net_mbps: 5,
+            net_updates: true,
         }
     }
 }
@@ -102,6 +115,9 @@ pub struct SessionReport {
     pub closed: Vec<String>,
     pub throttle: Vec<crate::sensors::ThrottleEvent>,
     pub fps: Option<crate::fps::FpsSummary>,
+    /// Apps whose bandwidth was capped ("windows-update" for the update cap).
+    #[serde(default)]
+    pub limited: Vec<String>,
 }
 
 struct Session {
@@ -116,6 +132,8 @@ struct Session {
     /// Closed apps: (name, exe path to reopen).
     closed: Vec<(String, String)>,
     last_purge: Option<Instant>,
+    /// Bandwidth caps in place for this session.
+    limited: Vec<String>,
 }
 
 struct State {
@@ -196,6 +214,8 @@ pub fn start(app: AppHandle) {
     std::thread::spawn(move || {
         use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, UpdateKind};
         let Ok(base) = app.path().app_data_dir() else { return };
+        // Bandwidth caps left behind by a session that didn't end cleanly
+        crate::netlimit::recover(&base);
         let mut sys = sysinfo::System::new();
         let mut games: Vec<Game> = Vec::new();
         let mut games_at: Option<Instant> = None;
@@ -267,7 +287,7 @@ pub fn start(app: AppHandle) {
 }
 
 fn new_session(game: Game, exe: String, pid: u32, boosted: bool) -> Session {
-    Session { game, exe, pid, start: crate::sysutil::now(), boosted, prev_plan: None, prev_profile: None, prev_parking: None, closed: Vec::new(), last_purge: None }
+    Session { game, exe, pid, start: crate::sysutil::now(), boosted, prev_plan: None, prev_profile: None, prev_parking: None, closed: Vec::new(), last_purge: None, limited: Vec::new() }
 }
 
 /// The user's answer from the prompt window (or the "Boost now" button / hotkey).
@@ -343,6 +363,15 @@ fn begin(app: &AppHandle, cfg: &Config, game: Game, exe: String, pid: u32) {
         s.last_purge = Some(Instant::now());
     }
     s.closed = close_apps(cfg, &s.game.id);
+    if cfg.net_limit && elevated {
+        s.limited = crate::netlimit::limit(&cfg.net_apps, cfg.net_mbps);
+        if cfg.net_updates
+            && let Ok(base) = app.path().app_data_dir()
+            && crate::netlimit::limit_updates(&base, 256)
+        {
+            s.limited.push("windows-update".into());
+        }
+    }
     if cfg.record_fps {
         let exe_name = Path::new(&exe).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         crate::fps::start(app, &exe_name, s.game.name.clone());
@@ -392,7 +421,11 @@ fn maybe_purge(cfg: &Config, sys: &sysinfo::System) {
 
 fn end(app: &AppHandle, base: &Path, cfg: &Config) {
     let Some(s) = state().lock().session.take() else { return };
-    let mut report = SessionReport { game_id: s.game.id.clone(), game: s.game.name.clone(), start: s.start, end: crate::sysutil::now(), boosted: s.boosted, closed: s.closed.iter().map(|c| c.0.clone()).collect(), throttle: Vec::new(), fps: None };
+    let mut report = SessionReport { game_id: s.game.id.clone(), game: s.game.name.clone(), start: s.start, end: crate::sysutil::now(), boosted: s.boosted, closed: s.closed.iter().map(|c| c.0.clone()).collect(), throttle: Vec::new(), fps: None, limited: s.limited.clone() };
+    if !s.limited.is_empty() {
+        crate::netlimit::clear_apps();
+        crate::netlimit::restore_updates(base);
+    }
     if s.boosted {
         report.throttle = crate::sensors::session_end();
         report.fps = crate::fps::stop();

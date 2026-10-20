@@ -152,7 +152,35 @@ let gmCfg = {
   enabled: true, default_boost: 'ask', switch_plan: true, apply_profile: false, close: ['onedrive', 'qbittorrent', 'ms-teams'], keep: ['discord', 'spotify'],
   reopen: true, clear_standby: true, timer: true, unpark: false, record_fps: true, overlay: true, custom: [],
   per_game: { 'steam:730': { boost: 'always', close: ['chrome'], keep: [] } } as Record<string, unknown>,
+  net_limit: true, net_apps: ['steam', 'epicgameslauncher', 'battle.net', 'onedrive', 'qbittorrent'], net_mbps: 5, net_updates: true,
 };
+const nowS = Math.floor(Date.now() / 1000);
+let lanOn = true;
+let benchRuns = [
+  { at: nowS - 2 * 86400, cpu_single: 2390, cpu_multi: 29400, memory: 38.2, disk_read: 6820, disk_write: 5110, disk_iops: 61200, gpu: 288.4, driver: 'NVIDIA 566.36', profile: 'gaming', drive: 'C:\\', threads: 16 },
+  { at: nowS - 9 * 86400, cpu_single: 2385, cpu_multi: 26900, memory: 37.9, disk_read: 6790, disk_write: 5050, disk_iops: 60400, gpu: 262.1, driver: 'NVIDIA 560.94', profile: 'balanced', drive: 'C:\\', threads: 16 },
+  { at: nowS - 30 * 86400, cpu_single: 2370, cpu_multi: 26750, memory: 37.5, disk_read: 6700, disk_write: 4980, disk_iops: 59800, gpu: 259.8, driver: 'NVIDIA 560.94', profile: 'balanced', drive: 'C:\\', threads: 16 },
+];
+let backupCfg = {
+  time: '20:00',
+  jobs: [
+    { id: 'b1', name: 'Game saves', sources: ['C:\\Users\\Player\\Saved Games', 'C:\\Users\\Player\\Documents\\My Games'], target: 'E:\\', keep: 8, schedule: 'weekly', last_run: nowS - 86400, last_error: '', last_size: 120 * MB },
+    { id: 'b2', name: 'Documents', sources: ['C:\\Users\\Player\\Documents'], target: 'D:\\', keep: 5, schedule: 'daily', last_run: nowS - 3 * 3600, last_error: '', last_size: 34 * MB },
+  ],
+};
+let junkRules = [
+  { id: 'r1', name: '.NET build output', kind: 'path', pattern: '*\\Projects\\*\\bin\\Debug', min_age_days: 14, safe: true, enabled: true },
+  { id: 'r2', name: 'Old installer downloads', kind: 'name', pattern: '*-setup-temp', min_age_days: 0, safe: false, enabled: true },
+];
+const gfxMock = [
+  { project: 'FortniteGame', name: 'Fortnite', path: 'C:\\Users\\Player\\AppData\\Local\\FortniteGame\\Saved\\Config\\WindowsClient\\GameUserSettings.ini',
+    groups: { ViewDistance: 3, AntiAliasing: 3, Shadow: 3, GlobalIllumination: 3, Reflection: 3, PostProcess: 3, Texture: 3, Effects: 3, Foliage: 3, Shading: 3, Landscape: 3 },
+    resolution: 100, vsync: true, frame_limit: 0, modified: Math.floor(Date.now() / 1000) - 3 * 86400,
+    backups: [{ file: 'FortniteGame-1a2b3c4d-1.ini', at: Math.floor(Date.now() / 1000) - 10 * 86400 }] },
+  { project: 'Palworld', name: 'Palworld', path: 'C:\\Users\\Player\\AppData\\Local\\Pal\\Saved\\Config\\Windows\\GameUserSettings.ini',
+    groups: { ViewDistance: 2, AntiAliasing: 2, Shadow: 2, GlobalIllumination: 2, Reflection: 2, PostProcess: 2, Texture: 3, Effects: 2, Foliage: 2, Shading: 2 },
+    resolution: 100, vsync: false, frame_limit: 120, modified: Math.floor(Date.now() / 1000) - 12 * 86400, backups: [] },
+];
 let pingSamples: (number | null)[] = Array.from({ length: 40 }, () => 14 + rnd() * 9);
 const snapshot = (i = 120) => ({
   at: Date.now() - (120 - i) * 2000, cpu_load: 28 + Math.sin(i / 7) * 14 + rnd() * 8, cpu_mhz: 4620, cpu_base_mhz: 3600, cpu_limit: 100, cpu_temp: 61 + Math.sin(i / 9) * 6, cpu_temp_approx: true,
@@ -217,6 +245,46 @@ export function installMock() {
       case 'get_node': return dto(a.id, Math.min(a.depth, 6), a.maxChildren, a.minFrac ? nodes[a.id].size * a.minFrac : 0);
       case 'get_ancestors': { const out: [number, string][] = []; for (let c = a.id; c >= 0; c = nodes[c].parent) out.unshift([c, nodes[c].name]); return out; }
       case 'largest_files': return files().slice(0, a.limit).map(n => ({ id: n.id, name: n.name, path: pathOf(n.id), size: n.size, cat: n.cat, modified: n.modified }));
+      case 'lan_info': return { enabled: lanOn, code: '482913', name: 'GAMING-PC', addresses: ['192.168.0.24'], port: 47615 };
+      case 'lan_set': lanOn = a.enabled; return null;
+      case 'lan_discover': await new Promise(r => setTimeout(r, 1000)); return [['OFFICE-LAPTOP', '192.168.0.31:47615'], ['KIDS-PC', '192.168.0.40:47615']];
+      case 'lan_peers': return [
+        { peer: { name: 'OFFICE-LAPTOP', addr: '192.168.0.31:47615', code: '' }, error: null, status: {
+          name: 'OFFICE-LAPTOP', version: '0.4.0', os: 'Windows 11 Pro 24H2', uptime: 3 * 86400 + 7200, care_score: 88, care_at: now - 2 * 86400, cpu_load: 12, cpu_temp: 54,
+          gpu_name: 'Intel Iris Xe', gpu_load: 4, gpu_temp: null, ram_used: 9.1 * GB, ram_total: 16 * GB, disks: [['C:\\', 512 * GB, 141 * GB]], at: now } },
+        { peer: { name: 'KIDS-PC', addr: '192.168.0.40:47615', code: '' }, error: null, status: {
+          name: 'KIDS-PC', version: '0.4.0', os: 'Windows 11 Home 24H2', uptime: 9 * 3600, care_score: 61, care_at: now - 15 * 86400, cpu_load: 71, cpu_temp: 83,
+          gpu_name: 'NVIDIA GeForce RTX 3060', gpu_load: 96, gpu_temp: 78, ram_used: 14.6 * GB, ram_total: 16 * GB, disks: [['C:\\', 1000 * GB, 38 * GB], ['D:\\', 2000 * GB, 820 * GB]], at: now } },
+        { peer: { name: 'LIVING-ROOM', addr: '192.168.0.52:47615', code: '' }, status: null, error: 'not reachable (is Tessera running there with sharing on?)' },
+      ];
+      case 'lan_add': await new Promise(r => setTimeout(r, 600)); return { name: 'OFFICE-LAPTOP' };
+      case 'lan_remove': return null;
+      case 'bench_history': return benchRuns;
+      case 'bench_delete': benchRuns = benchRuns.filter(r => r.at !== a.at); return null;
+      case 'bench_run': {
+        for (const p of ['cpu_single', 'cpu_multi', 'memory', 'disk']) { await emit('bench-progress', p); await new Promise(r => setTimeout(r, 700)); }
+        const r = { ...benchRuns[0], at: now, cpu_single: 2410, cpu_multi: 29870, gpu: a.gpu ?? null };
+        benchRuns = [r, ...benchRuns];
+        return r;
+      }
+      case 'backup_config': return backupCfg;
+      case 'backup_set_config': backupCfg = a.config; return null;
+      case 'backup_run': await new Promise(r => setTimeout(r, 1200)); return { copied: 14, linked: 2318, bytes: 86 * MB, failed: [], snapshot: 'E:\\Tessera Backup\\Game saves\\2026-10-20 12.00' };
+      case 'backup_snapshots': return a.id === 'b1' ? [
+        { name: '2026-10-19 20.00', path: 'E:\\Tessera Backup\\Game saves\\2026-10-19 20.00' }, { name: '2026-10-12 20.00', path: 'E:\\Tessera Backup\\Game saves\\2026-10-12 20.00' },
+        { name: '2026-10-05 20.00', path: 'E:\\Tessera Backup\\Game saves\\2026-10-05 20.00' },
+      ] : [];
+      case 'backup_suggestions': return [
+        ['documents', 'C:\\Users\\Player\\Documents', 8.4 * GB], ['pictures', 'C:\\Users\\Player\\Pictures', 21 * GB],
+        ['saves', 'C:\\Users\\Player\\Saved Games', 640 * MB], ['saves', 'C:\\Users\\Player\\Documents\\My Games', 1.1 * GB],
+        ['saves', 'C:\\Users\\Player\\AppData\\Local\\Pal\\Saved\\SaveGames', 92 * MB],
+      ];
+      case 'junk_rules_get': return junkRules;
+      case 'junk_rules_set': junkRules = a.rules; return null;
+      case 'junk_rule_preview': await new Promise(r => setTimeout(r, 250)); return {
+        size: 3.4 * GB, count: 7,
+        sample: ['C:\\Users\\Player\\Projects\\shop\\bin\\Debug', 'C:\\Users\\Player\\Projects\\api\\bin\\Debug', 'C:\\Users\\Player\\Projects\\tools\\bin\\Debug'],
+      };
       case 'find_junk': return [
         junkRule('node_modules', 'node_modules folders', 'Reinstall with npm/pnpm install', true, ['node_modules']),
         junkRule('cargo_target', 'Rust target folders', 'Rebuilt by cargo build', true, ['target']),
@@ -305,7 +373,7 @@ export function installMock() {
       }
       case 'cancel_delete': return null;
       case 'hardlink_dupes': return { freed: 12 * GB, deleted: a.pairs.length, failed: [] };
-      case 'prefs_get': return { close_to_tray: true, tray_meter: true, tray_hint_shown: true, widget: false, widget_on_top: true, hotkeys_enabled: true, hotkeys: { fps: 'Ctrl+Shift+F', boost: 'Ctrl+Shift+B', care: 'Ctrl+Shift+C', widget: 'Ctrl+Shift+W' }, weekly: true };
+      case 'prefs_get': return { close_to_tray: true, tray_meter: true, tray_hint_shown: true, widget: false, widget_on_top: true, hotkeys_enabled: true, hotkeys: { fps: 'Ctrl+Shift+F', boost: 'Ctrl+Shift+B', care: 'Ctrl+Shift+C', widget: 'Ctrl+Shift+W' }, weekly: true, overlay: { corner: 'tl', scale: 1, opacity: 0.9, fields: ['fps', 'low1', 'frametime', 'graph', 'cpu', 'gpu', 'ping'], compact: false } };
       case 'prefs_set': return [];
       case 'tray_labels': return null;
       case 'launch_state': return { hidden: false };
@@ -342,6 +410,27 @@ export function installMock() {
       case 'leftovers_remove': return { removed: (a.items ?? []).length, freed: 180 * MB, failed: [], backup: null, restore_point: 'session' };
       case 'updates_list': return { available: true, items: updates() };
       case 'update_install': await new Promise(r => setTimeout(r, 900)); return null;
+      case 'update_history': return {
+        done: [
+          { id: 'Discord.Discord', name: 'Discord', from: '1.0.9198', to: '1.0.9201', at: now - 2 * 86400, rolled_back: false },
+          { id: 'OBSProject.OBSStudio', name: 'OBS Studio', from: '31.0.3', to: '31.1', at: now - 9 * 86400, rolled_back: true },
+          { id: 'Git.Git', name: 'Git', from: '2.53.1', to: '2.54.0', at: now - 20 * 86400, rolled_back: false },
+        ],
+        pins: ['OBSProject.OBSStudio'],
+      };
+      case 'update_versions': return ['31.1', '31.0.3', '31.0.2'];
+      case 'update_rollback': case 'update_pin': await new Promise(r => setTimeout(r, 700)); return null;
+      case 'driverstore_scan': await new Promise(r => setTimeout(r, 800)); return {
+        needs_admin: false, removable_bytes: 2.9 * GB,
+        packages: [
+          { inf: 'oem41.inf', original: 'nv_dispig.inf', provider: 'NVIDIA', class: 'Display', version: '32.0.15.6094', date: now - 160 * 86400, size: 1.4 * GB, in_use: false, newest: false, removable: true },
+          { inf: 'oem37.inf', original: 'nv_dispig.inf', provider: 'NVIDIA', class: 'Display', version: '32.0.15.5612', date: now - 260 * 86400, size: 1.3 * GB, in_use: false, newest: false, removable: true },
+          { inf: 'oem12.inf', original: 'rtkhdaud.inf', provider: 'Realtek Semiconductor Corp.', class: 'MEDIA', version: '6.0.9600.1', date: now - 400 * 86400, size: 210 * MB, in_use: false, newest: false, removable: true },
+          { inf: 'oem45.inf', original: 'nv_dispig.inf', provider: 'NVIDIA', class: 'Display', version: '32.0.15.6636', date: now - 30 * 86400, size: 1.5 * GB, in_use: true, newest: true, removable: false },
+          { inf: 'oem13.inf', original: 'rtkhdaud.inf', provider: 'Realtek Semiconductor Corp.', class: 'MEDIA', version: '6.0.9700.1', date: now - 200 * 86400, size: 220 * MB, in_use: true, newest: true, removable: false },
+        ],
+      };
+      case 'driverstore_remove': await new Promise(r => setTimeout(r, 1200)); return { removed: a.infs, failed: [] };
       case 'net_status': return {
         adapters: [{ index: 10, name: 'Ethernet', description: 'Intel(R) Ethernet Connection I219-V', guid: '{0}', servers: ['192.168.0.1'], manual: false, preset: 'auto' }],
         tcp: [{ key: 'autotuning', on: true, value: 'Normal' }, { key: 'rss', on: false, value: 'Disabled' }, { key: 'nagle', on: false, value: '' }],
@@ -364,6 +453,16 @@ export function installMock() {
       case 'winupdate_reset': case 'settings_export': return null;
       case 'game_exes': return [['C:\\Games\\Steam\\steamapps\\common\\Counter-Strike Global Offensive\\game\\bin\\win64\\cs2.exe', { priority: 'high', gpu_high: true, no_fso: false }]];
       case 'game_leftovers': return [{ path: 'D:\\SteamLibrary\\steamapps\\common\\Old Racing Game', size: 14.2 * GB, launcher: 'steam' }];
+      case 'game_updates': return [
+        { game_id: 'steam:730', game: 'Counter-Strike 2', at: now - 5 * 3600, from: '18736402', to: '18820911', items: [
+          { path: 'D:\\SteamLibrary\\steamapps\\shadercache\\730', size: 1.8 * GB, kind: 'shader' },
+          { path: 'D:\\SteamLibrary\\steamapps\\downloading\\730', size: 640 * MB, kind: 'download' },
+          { path: 'C:\\Users\\Player\\AppData\\Local\\NVIDIA\\DXCache', size: 2.1 * GB, kind: 'driver_shader' },
+        ] },
+      ];
+      case 'game_updates_clean': await new Promise(r => setTimeout(r, 900)); return { freed: 4.5 * GB, failed: [] };
+      case 'gfx_list': return gfxMock;
+      case 'gfx_save': case 'gfx_restore': await new Promise(r => setTimeout(r, 400)); return null;
       case 'game_remove_paths': return { freed: 16 * GB, failed: [] };
       case 'gamemode_config': return gmCfg;
       case 'gamemode_set_config': gmCfg = a.config; return null;
@@ -376,12 +475,19 @@ export function installMock() {
         { id: 'chrome', name: 'chrome', memory: 3.1 * GB }, { id: 'discord', name: 'Discord', memory: 0.6 * GB }, { id: 'onedrive', name: 'OneDrive', memory: 0.2 * GB },
         { id: 'spotify', name: 'Spotify', memory: 0.3 * GB }, { id: 'ms-teams', name: 'ms-teams', memory: 0.9 * GB }, { id: 'steamwebhelper', name: 'steamwebhelper', memory: 0.4 * GB },
       ];
-      case 'fps_status': return { tool_ready: true, recording: null, elevated: true, overlay: false };
+      case 'fps_status': return { tool_ready: true, recording: null, elevated: true, overlay: false, phase: null };
       case 'fps_stop': return null;
       case 'fps_sessions': return [
-        { game: 'Counter-Strike 2', exe: 'cs2.exe', start: now - 86400, seconds: 5400, frames: 1_500_000, avg: 278, low1: 164, low01: 121, timeline: Array.from({ length: 90 }, (_, i) => 260 + Math.sin(i / 5) * 25 + rnd() * 20) },
+        { game: 'Counter-Strike 2', exe: 'cs2.exe', start: now - 86400, seconds: 5400, frames: 1_500_000, avg: 278, low1: 164, low01: 121, timeline: Array.from({ length: 90 }, (_, i) => 260 + Math.sin(i / 5) * 25 + rnd() * 20),
+          refresh: 165, latency: { display_ms: 4.1, vsync: 0, tearing: 1, present_mode: 'Hardware: Independent Flip', dropped: 0.01, gpu_busy: 0.71 },
+          stutters: [
+            { sec: 1834, ms: 142, cause: 'background', detail: 'MsMpEng' }, { sec: 312, ms: 96, cause: 'game', detail: '' },
+            { sec: 2710, ms: 74, cause: 'background', detail: 'MsMpEng' }, { sec: 4021, ms: 61, cause: 'disk', detail: '' }, { sec: 45, ms: 48, cause: 'game', detail: '' },
+          ] },
         { game: 'Counter-Strike 2', exe: 'cs2.exe', start: now - 6 * 86400, seconds: 3600, frames: 900_000, avg: 241, low1: 131, low01: 98, timeline: Array.from({ length: 60 }, (_, i) => 230 + Math.cos(i / 6) * 30 + rnd() * 20) },
-        { game: 'Fortnite', exe: 'FortniteClient-Win64-Shipping.exe', start: now - 3 * 86400, seconds: 7200, frames: 1_000_000, avg: 141, low1: 92, low01: 70, timeline: Array.from({ length: 120 }, (_, i) => 140 + Math.sin(i / 8) * 18 + rnd() * 12) },
+        { game: 'Fortnite', exe: 'FortniteClient-Win64-Shipping.exe', start: now - 3 * 86400, seconds: 7200, frames: 1_000_000, avg: 141, low1: 92, low01: 70, timeline: Array.from({ length: 120 }, (_, i) => 140 + Math.sin(i / 8) * 18 + rnd() * 12),
+          refresh: 144, latency: { display_ms: 13.8, vsync: 1, tearing: 0, present_mode: 'Composed: Flip', dropped: 0.07, gpu_busy: 0.98 },
+          stutters: [{ sec: 2410, ms: 188, cause: 'thermal', detail: 'GPU' }, { sec: 2470, ms: 120, cause: 'thermal', detail: 'GPU' }, { sec: 5120, ms: 77, cause: 'gpu', detail: '' }] },
       ];
       case 'sensors_now': return snapshot();
       case 'sensors_history': return { history: Array.from({ length: 120 }, (_, i) => snapshot(i)), throttle: [{ start: Date.now() - 3 * 3600_000, end: Date.now() - 3 * 3600_000 + 95_000, kind: 'gpu_thermal', worst: 86 }], trend: { days: Array.from({ length: 40 }, (_, i) => [`2026-09-${String((i % 30) + 1).padStart(2, '0')}`, 38 + i * 0.25 + rnd() * 2, 34 + i * 0.2]), cpu_rise: 9.5, gpu_rise: 7 } };
@@ -405,7 +511,52 @@ export function installMock() {
       case 'security_status': return { defender: true, realtime: true, signature_age: 0, firewall: false, bitlocker: null, secure_boot: true, uac: true };
       case 'winupdate_status': return { last_install: now - 18 * 86400, last_title: 'KB5129195 Security Update', reboot_pending: true, service_running: false };
       case 'winupdate_pending': await new Promise(r => setTimeout(r, 1200)); return ['2026-10 Cumulative Update for Windows 11 (KB5131234)', 'Microsoft Defender Antivirus definition update'];
-      case 'boot_info': return { last_boot: now - 9 * 3600, history: Array.from({ length: 14 }, (_, i) => [now - i * 86400, 38000 - i * 400 + rnd() * 6000, 19000 + rnd() * 3000, 15000]), slow: [['Docker Desktop', 8400], ['Steam Client', 5100], ['OneDrive', 2200]], needs_admin: false };
+      case 'boot_info': return { last_boot: now - 9 * 3600, history: Array.from({ length: 14 }, (_, i) => [now - i * 86400, 38000 - i * 400 + rnd() * 6000, 19000 + rnd() * 3000, 15000]), slow: [['Docker Desktop', 8400], ['Steam Client', 5100], ['OneDrive', 2200]], needs_admin: false,
+        runs: Array.from({ length: 8 }, (_, i) => {
+          const main = 17000 + rnd() * 5000 + (i === 2 ? 9000 : 0);
+          const total = main + 12000 + rnd() * 9000;
+          const items: [string, number, string][] = i === 2 ? [['Docker Desktop', 8400, 'app'], ['Steam Client', 5100, 'app'], ['nvlddmkm', 1200, 'driver']] : i % 3 === 0 ? [['OneDrive', 2200, 'app']] : [];
+          return { at: now - i * 86400 - 9 * 3600, total, main, post: total - main, items };
+        }),
+        startup: [
+          { id: 'u:Discord', name: 'Discord', after: 14, memory: 380 * MB }, { id: 'u:Steam', name: 'Steam', after: 19, memory: 240 * MB },
+          { id: 'u:OneDrive', name: 'Microsoft OneDrive', after: 23, memory: 95 * MB }, { id: 'm:Docker', name: 'Docker Desktop', after: 41, memory: 1.2 * GB },
+          { id: 'u:Spotify', name: 'Spotify', after: 55, memory: 210 * MB },
+        ] };
+      case 'slow_check': await new Promise(r => setTimeout(r, 900)); return {
+        cpu: 87, ram_used: 27.1 * GB, ram_total: 32 * GB, disk_busy: 64, net_down: 3.4 * MB, net_up: 120 * 1024,
+        top_cpu: [
+          { name: 'MsMpEng', pid: 4120, cpu: 31.4, memory: 410 * MB, disk: 22 * MB, known: 'defender' }, { name: 'chrome', pid: 9001, cpu: 22.8, memory: 4.1 * GB, disk: 0.4 * MB, known: null },
+          { name: 'Discord', pid: 7004, cpu: 6.1, memory: 690 * MB, disk: 0.1 * MB, known: null }, { name: 'OneDrive', pid: 6100, cpu: 4.2, memory: 180 * MB, disk: 4 * MB, known: 'sync' },
+          { name: 'dwm', pid: 1200, cpu: 3.0, memory: 160 * MB, disk: 0, known: 'compositor' },
+        ],
+        top_mem: [
+          { name: 'chrome', pid: 9001, cpu: 22.8, memory: 4.1 * GB, disk: 0.4 * MB, known: null }, { name: 'Docker Desktop', pid: 3300, cpu: 1.2, memory: 2.3 * GB, disk: 0, known: null },
+          { name: 'Discord', pid: 7004, cpu: 6.1, memory: 690 * MB, disk: 0.1 * MB, known: null }, { name: 'MsMpEng', pid: 4120, cpu: 31.4, memory: 410 * MB, disk: 22 * MB, known: 'defender' },
+        ],
+        top_disk: [
+          { name: 'MsMpEng', pid: 4120, cpu: 31.4, memory: 410 * MB, disk: 22 * MB, known: 'defender' }, { name: 'OneDrive', pid: 6100, cpu: 4.2, memory: 180 * MB, disk: 4 * MB, known: 'sync' },
+        ],
+        findings: [
+          { kind: 'known', level: 2, subject: 'defender', value: 31, page: null },
+          { kind: 'cpu', level: 2, subject: 'MsMpEng', value: 87, page: 'background' },
+          { kind: 'memory', level: 2, subject: 'chrome', value: 85, page: 'background' },
+          { kind: 'startup', level: 1, subject: '', value: 14, page: 'startup' },
+        ],
+      };
+      case 'wake_info': return {
+        wakes: [
+          { at: now - 8 * 3600, slept: 7.5 * 3600, source: 'Device -HID-compliant mouse', timer_owner: '' },
+          { at: now - 30 * 3600, slept: 2 * 3600, source: 'Timer - Windows will execute \'NT TASK\\Microsoft\\Windows\\UpdateOrchestrator\\Reboot\'', timer_owner: 'svchost.exe' },
+          { at: now - 2 * 86400, slept: 9 * 3600, source: 'Device -HID-compliant mouse', timer_owner: '' },
+          { at: now - 3 * 86400, slept: 8 * 3600, source: 'Power Button', timer_owner: '' },
+        ],
+        devices: ['HID-compliant mouse', 'HID Keyboard Device', 'Intel(R) Ethernet Connection I219-V'],
+        tasks: [{ path: '\\Microsoft\\Windows\\UpdateOrchestrator\\', name: 'Reboot', system: true }, { path: '\\', name: 'Backup to NAS', system: false }],
+        blockers: [{ kind: 'DISPLAY', who: 'PROCESS: chrome.exe', reason: 'Video Wake Lock' }, { kind: 'SYSTEM', who: 'DRIVER: Realtek High Definition Audio', reason: 'An audio stream is currently in use.' }],
+        blockers_need_admin: false,
+      };
+      case 'wake_set_device': case 'wake_task_off': return null;
       case 'drivers_list': return [{ name: 'NVIDIA GeForce RTX 4070', vendor: 'nvidia', version: '32.0.15.6094', date: now - 160 * 86400, display_version: '560.94', download: 'https://www.nvidia.com/en-us/drivers/' }];
       case 'component_cleanup': await new Promise(r => setTimeout(r, 1500)); return 2.7 * GB;
       case 'stats_report': return {
