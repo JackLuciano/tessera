@@ -4,7 +4,8 @@
 //!   load, memory lists) and `nvidia-smi`, which ships with the NVIDIA driver (temperature, clocks,
 //!   power, fan, throttle reasons). AMD/Intel GPUs report load only. ACPI thermal zones are what
 //!   Windows exposes without a driver; on many boards they lag behind the real CPU temperature,
-//!   so the UI labels the CPU value as approximate.
+//!   so the UI labels the CPU value as approximate. When the user installed the optional PawnIO
+//!   driver (`cputemp`), the real CPU temperature replaces it.
 //! - Linux / macOS: sysinfo's components (hwmon / SMC) plus `nvidia-smi` when present.
 //!
 //! A sampler thread keeps ten minutes of history, records idle temperatures per day (for the
@@ -182,6 +183,10 @@ struct Sampler {
     reason_field: Option<&'static str>,
     sys: sysinfo::System,
     gpu_names: Vec<String>,
+    /// PawnIO, when the user installed it: the real CPU temperature.
+    cpu: Option<crate::cputemp::Reader>,
+    /// Samples until the next attempt to open PawnIO.
+    cpu_retry: u32,
 }
 
 #[cfg(windows)]
@@ -203,7 +208,24 @@ impl Sampler {
     fn new() -> Self {
         // Adapter names once, for AMD / Intel cards that nvidia-smi doesn't cover
         let gpu_names = crate::sysutil::powershell::<Vec<String>>("ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_VideoController | ForEach-Object { \"$($_.Name)\" })").unwrap_or_default();
-        Self { query: crate::perf::Query::new(COUNTERS), smi: nvidia_smi(), reason_field: None, sys: sysinfo::System::new(), gpu_names }
+        Self { query: crate::perf::Query::new(COUNTERS), smi: nvidia_smi(), reason_field: None, sys: sysinfo::System::new(), gpu_names, cpu: None, cpu_retry: 0 }
+    }
+
+    /// Real CPU temperature from PawnIO; the driver is looked for again every minute (or right
+    /// after an install) while it isn't open.
+    fn driver_temp(&mut self) -> Option<f32> {
+        if self.cpu.is_none() {
+            let retry_now = crate::cputemp::RETRY.swap(false, std::sync::atomic::Ordering::Relaxed);
+            if self.cpu_retry == 0 || retry_now {
+                self.cpu_retry = 30;
+                if crate::cputemp::installed_version().is_some() {
+                    self.cpu = crate::cputemp::Reader::open();
+                }
+            } else {
+                self.cpu_retry -= 1;
+            }
+        }
+        self.cpu.as_ref()?.read()
     }
 
     fn sample(&mut self) -> Snapshot {
@@ -235,6 +257,11 @@ impl Sampler {
             s.cpu_temp = zones.iter().map(|z| z.1).reduce(f32::max);
             s.cpu_temp_approx = true;
             s.sensors = zones;
+            if let Some(t) = self.driver_temp() {
+                s.cpu_temp = Some(t);
+                s.cpu_temp_approx = false;
+                s.sensors.insert(0, ("CPU".into(), t));
+            }
             let standby: f64 = [6, 7, 8].iter().filter_map(|i| get(COUNTERS[*i])).sum();
             s.ram_standby = (standby > 0.0).then_some(standby as u64);
             s.disk_busy = get(COUNTERS[9]).map(|idle| (100.0 - idle).clamp(0.0, 100.0) as f32);

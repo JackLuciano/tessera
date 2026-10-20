@@ -2,6 +2,8 @@ mod backup;
 mod bench;
 mod cache;
 mod care;
+#[cfg(windows)]
+mod cputemp;
 mod delete;
 mod diskhealth;
 #[cfg(windows)]
@@ -1725,6 +1727,36 @@ fn sensors_history() -> SensorHistory {
     SensorHistory { history: sensors::history(), throttle: sensors::throttle_events(), trend: sensors::trend() }
 }
 
+#[derive(Serialize)]
+struct CpuDriver {
+    /// The optional CPU temperature driver (PawnIO) can be offered here: Windows on Intel or AMD Zen.
+    supported: bool,
+    installed: Option<String>,
+}
+
+#[tauri::command]
+fn cpu_driver() -> CpuDriver {
+    #[cfg(windows)]
+    return CpuDriver { supported: cputemp::supported(), installed: cputemp::installed_version() };
+    #[cfg(not(windows))]
+    CpuDriver { supported: false, installed: None }
+}
+
+/// Install PawnIO for the real CPU temperature; true when Windows wants a restart first.
+#[tauri::command]
+async fn cpu_driver_install(app: AppHandle) -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        let base = data_dir(&app)?;
+        blocking(move || cputemp::install(&base)).await?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Err(WINDOWS_ONLY.into())
+    }
+}
+
 #[tauri::command]
 fn ping_get(host: Option<String>) -> ping::PingState {
     ping::get(host)
@@ -2550,7 +2582,7 @@ fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
                 disk_health, disk_optimize, registry_scan, registry_fix, registry_backups, registry_undo, programs_list, program_uninstall,
                 program_leftovers, leftovers_remove, updates_list, update_install, net_status, net_set_dns, net_latency, net_flush,
                 net_set_tcp, net_restore, net_repair, care_config, care_set_config, care_scan, care_fix, prefs_get, prefs_set, tray_labels,
-                launch_state, sensors_now, sensors_history, ping_get, ping_gateway, battery_info, stats_report, widget_set,
+                launch_state, sensors_now, sensors_history, cpu_driver, cpu_driver_install, ping_get, ping_gateway, battery_info, stats_report, widget_set,
                 settings_export, settings_import, open_uri, slow_check, junk_rules_get, junk_rules_set, junk_rule_preview,
                 bench_history, bench_delete, bench_run, backup_config, backup_set_config, backup_run, backup_snapshots, backup_suggestions,
                 lan_info, lan_set, lan_discover, lan_peers, lan_add, lan_remove
