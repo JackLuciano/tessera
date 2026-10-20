@@ -4,7 +4,7 @@
 //! single directory. Requires administrator rights; callers fall back to the
 //! directory walk on any error.
 
-use crate::scanner::{Cat, Kind, Node, Progress, Tree, CAT_COUNT, FILE_NODE_MIN, NO_PARENT};
+use crate::scanner::{roll_up, sort_children, Cat, CatStore, Kind, Node, Progress, Tree, CAT_COUNT, FILE_NODE_MIN, NO_PARENT};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -324,10 +324,8 @@ fn build_tree(root: &Path, recs: Vec<Rec>, names: &str, progress: &Progress, sta
     drop(fill);
 
     let mut nodes: Vec<Node> = Vec::with_capacity(recs.len() / 3);
-    let new_node = |name: String, parent: u32, kind: Kind| Node {
-        name, parent, size: 0, files: 0, dirs: 0, kind, children: Vec::new(), cats: [0; CAT_COUNT], modified: 0,
-    };
-    nodes.push(new_node(root.to_string_lossy().into_owned(), NO_PARENT, Kind::Dir));
+    let mut cats = CatStore::default();
+    nodes.push(Node::dir(root.to_string_lossy().into(), NO_PARENT));
 
     // Depth-first with an explicit stack: a node gets its index when its parent is expanded, so every
     // parent still has a smaller arena index than its children, and only the folders along the
@@ -336,8 +334,10 @@ fn build_tree(root: &Path, recs: Vec<Rec>, names: &str, progress: &Progress, sta
     let mut visited = vec![false; recs.len()];
     visited[ROOT_RECORD] = true;
     let (mut files, mut bytes) = (0u64, 0u64);
+    // Children of the folder being expanded; all of them are added in one iteration
+    let mut children: Vec<u32> = Vec::new();
     while let Some((rec_id, node_id, path_lower)) = stack.pop() {
-        let mut bucket = new_node(String::new(), node_id, Kind::Bucket);
+        let (mut b_size, mut b_files, mut b_modified, mut b_cats) = (0u64, 0u32, 0u32, [0u64; CAT_COUNT]);
         for &k in &kids[start[rec_id] as usize..start[rec_id + 1] as usize] {
             let k = k as usize;
             if visited[k] {
@@ -348,38 +348,32 @@ fn build_tree(root: &Path, recs: Vec<Rec>, names: &str, progress: &Progress, sta
             let name = r.name(names);
             if r.is_dir {
                 let id = nodes.len() as u32;
-                let mut n = new_node(name.to_owned(), node_id, Kind::Dir);
-                n.modified = r.modified as u64;
+                let mut n = Node::dir(name.into(), node_id);
+                n.modified = r.modified;
                 nodes.push(n);
-                nodes[node_id as usize].children.push(id);
+                children.push(id);
                 stack.push((k, id, format!("{path_lower}\\{}", name.to_lowercase())));
             } else {
                 files += 1;
                 bytes += r.size;
-                let cat = Cat::classify(name, &path_lower) as usize;
+                let cat = Cat::classify(name, &path_lower);
                 if r.size >= FILE_NODE_MIN {
-                    let id = nodes.len() as u32;
-                    let mut n = new_node(name.to_owned(), node_id, Kind::File);
-                    n.size = r.size;
-                    n.files = 1;
-                    n.cats[cat] = r.size;
-                    n.modified = r.modified as u64;
-                    nodes.push(n);
-                    nodes[node_id as usize].children.push(id);
+                    children.push(nodes.len() as u32);
+                    nodes.push(Node::file(name.into(), node_id, r.size, cat, r.modified));
                 } else {
-                    bucket.size += r.size;
-                    bucket.files += 1;
-                    bucket.cats[cat] += r.size;
-                    bucket.modified = bucket.modified.max(r.modified as u64);
+                    b_size += r.size;
+                    b_files += 1;
+                    b_cats[cat as usize] += r.size;
+                    b_modified = b_modified.max(r.modified);
                 }
             }
         }
-        if bucket.files > 0 {
-            bucket.name = format!("{} small files", bucket.files);
-            let id = nodes.len() as u32;
-            nodes.push(bucket);
-            nodes[node_id as usize].children.push(id);
+        if b_files > 0 {
+            children.push(nodes.len() as u32);
+            nodes.push(Node::bucket(format!("{b_files} small files").into(), node_id, b_size, b_files, b_modified, &b_cats, &mut cats));
         }
+        nodes[node_id as usize].children = children.as_slice().into();
+        children.clear();
     }
     // The record table is the biggest allocation of the scan; free it before the roll-up
     drop((recs, kids, start, visited));
@@ -389,30 +383,12 @@ fn build_tree(root: &Path, recs: Vec<Rec>, names: &str, progress: &Progress, sta
     progress.dirs.store(nodes.iter().filter(|n| n.kind == Kind::Dir).count() as u64, Ordering::Relaxed);
 
     // Roll sizes up: children always have higher indices than their parent
-    for i in (1..nodes.len()).rev() {
-        let (size, f, d, cats, m, parent, is_dir) = {
-            let n = &nodes[i];
-            (n.size, n.files, n.dirs, n.cats, n.modified, n.parent as usize, n.kind == Kind::Dir)
-        };
-        let p = &mut nodes[parent];
-        p.size += size;
-        p.files += f;
-        p.dirs += d + u64::from(is_dir);
-        p.modified = p.modified.max(m);
-        for (c, v) in p.cats.iter_mut().zip(cats) {
-            *c += v;
-        }
-    }
-    for i in 0..nodes.len() {
-        let mut ch = std::mem::take(&mut nodes[i].children);
-        ch.sort_by_key(|c| std::cmp::Reverse(nodes[*c as usize].size));
-        // Pushing one by one leaves up to half of each list as spare capacity
-        ch.shrink_to_fit();
-        nodes[i].children = ch;
-    }
+    roll_up(&mut nodes, &mut cats);
+    sort_children(&mut nodes);
     nodes.shrink_to_fit();
+    cats.shrink_to_fit();
 
-    Ok(Tree { nodes, root_path: root.to_path_buf(), elapsed_ms: started.elapsed().as_millis() as u64, errors: 0 })
+    Ok(Tree { nodes, cats, root_path: root.to_path_buf(), elapsed_ms: started.elapsed().as_millis() as u64, errors: 0 })
 }
 
 #[cfg(test)]

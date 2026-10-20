@@ -79,7 +79,7 @@ pub fn candidates(t: &Tree) -> Vec<(u32, PathBuf, u64, u64)> {
         .into_values()
         .filter(|v| v.len() > 1)
         .flatten()
-        .map(|id| { let n = &t.nodes[id as usize]; (id, t.path_of(id), n.size, n.modified) })
+        .map(|id| { let n = &t.nodes[id as usize]; (id, t.path_of(id), n.size, u64::from(n.modified)) })
         .collect()
 }
 
